@@ -1,0 +1,78 @@
+name: online-media
+services:
+  postgres:
+    image: postgres:16.10-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: media
+      POSTGRES_USER: media
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [media-network]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U media -d media"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  media-api:
+    build: ../media-source-server
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      HTTP_PORT: 8080
+      PUBLIC_BASE_URL: ${PUBLIC_MEDIA_BASE_URL:?set PUBLIC_MEDIA_BASE_URL}
+      DATABASE_URL: postgres://media:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/media?sslmode=disable
+      REQUEST_TIMEOUT: 10s
+      API_KEY: ${API_KEY:?set API_KEY}
+      PLAY_URL_SIGNING_SECRET: ${PLAY_URL_SIGNING_SECRET:?set PLAY_URL_SIGNING_SECRET}
+      SEARCH_CACHE_TTL: 10m
+      MEDIA_CACHE_TTL: 1h
+      SOURCE_CACHE_TTL: 30m
+      LOG_LEVEL: info
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [media-network]
+    healthcheck:
+      test: ["CMD", "/app/healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+  jellyfin:
+    image: jellyfin/jellyfin:12.1
+    restart: unless-stopped
+    volumes:
+      - jellyfin-config:/config
+      - jellyfin-cache:/cache
+      - ./plugins:/config/plugins
+    networks: [media-network]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8096/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      JELLYFIN_HOST: ${JELLYFIN_HOST:?set JELLYFIN_HOST}
+      MEDIA_API_HOST: ${MEDIA_API_HOST:?set MEDIA_API_HOST}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [jellyfin, media-api]
+    networks: [media-network]
+volumes:
+  postgres-data:
+  jellyfin-config:
+  jellyfin-cache:
+  caddy-data:
+  caddy-config:
+networks:
+  media-network:
+    driver: bridge

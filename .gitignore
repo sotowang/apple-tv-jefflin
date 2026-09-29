@@ -1,0 +1,6 @@
+deploy/.env
+deploy/plugins/*
+!deploy/plugins/.gitkeep
+**/bin/
+**/obj/
+.DS_Store

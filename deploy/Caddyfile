@@ -1,0 +1,6 @@
+{$JELLYFIN_HOST} {
+    reverse_proxy jellyfin:8096
+}
+{$MEDIA_API_HOST} {
+    reverse_proxy media-api:8080
+}

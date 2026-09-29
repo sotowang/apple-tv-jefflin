@@ -1,0 +1,12 @@
+<!doctype html><html><head><title>Online Media</title></head><body>
+<div data-role="page" class="page type-interior pluginConfigurationPage" id="onlineMediaConfigPage"><div data-role="content"><form id="onlineMediaConfigForm">
+<div class="inputContainer"><label class="inputLabel" for="mediaApiBaseUrl">Media API Base URL</label><input is="emby-input" id="mediaApiBaseUrl" type="url" required /></div>
+<div class="inputContainer"><label class="inputLabel" for="mediaApiKey">API Key</label><input is="emby-input" id="mediaApiKey" type="password" required autocomplete="new-password" /></div>
+<div class="inputContainer"><label class="inputLabel" for="mediaApiTimeout">Request Timeout (seconds)</label><input is="emby-input" id="mediaApiTimeout" type="number" min="1" max="60" /></div>
+<button is="emby-button" type="submit" class="raised button-submit block"><span>Save</span></button>
+</form></div></div>
+<script>
+(function(){const page=document.querySelector('#onlineMediaConfigPage');const id='e75b5cdd-c166-497f-b9b4-f425cf80e7a4';
+page.addEventListener('pageshow',function(){Dashboard.showLoadingMsg();ApiClient.getPluginConfiguration(id).then(function(c){page.querySelector('#mediaApiBaseUrl').value=c.MediaApiBaseUrl||'';page.querySelector('#mediaApiKey').value=c.ApiKey||'';page.querySelector('#mediaApiTimeout').value=c.RequestTimeoutSeconds||10;Dashboard.hideLoadingMsg();});});
+page.querySelector('#onlineMediaConfigForm').addEventListener('submit',function(e){e.preventDefault();Dashboard.showLoadingMsg();ApiClient.getPluginConfiguration(id).then(function(c){c.MediaApiBaseUrl=page.querySelector('#mediaApiBaseUrl').value.trim().replace(/\/$/,'');c.ApiKey=page.querySelector('#mediaApiKey').value;c.RequestTimeoutSeconds=parseInt(page.querySelector('#mediaApiTimeout').value,10)||10;return ApiClient.updatePluginConfiguration(id,c)}).then(function(){Dashboard.processPluginConfigurationUpdateResult();});});})();
+</script></body></html>
