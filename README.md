@@ -1,12 +1,12 @@
 # Online Media V1
 
-A personal, zero video storage Internet Archive browser for Jellyfin and Swiftfin. PostgreSQL stores metadata, source references, and library choices. The Go service issues ten minute signed play links and responds with HTTP 302 to the Archive file. The VPS does not download, proxy, cache, or transcode video.
+A personal, zero video storage Internet Archive browser for Jellyfin and Swiftfin. PostgreSQL stores metadata, source references, and library choices. The Go service issues ten minute signed play links for the Jellyfin Channel. A catalog sync also writes `.strm` links and `.nfo` metadata to a standard Jellyfin Movies library for Swiftfin. The catalog sync does not download video; Jellyfin may fetch video when probing or transcoding.
 
 ## Layout
 
 - `media-source-server/`: Go API, sqlc queries, SQL migration, Archive provider, tests.
 - `jellyfin-online-media-plugin/`: Jellyfin 12.1 Channel plugin, shared Media API client, and configuration page.
-- `deploy/`: four service Docker Compose deployment and Caddy HTTPS routing.
+- `deploy/`: Docker Compose deployment, Caddy HTTPS routing, and a shared metadata-only movie catalog volume.
 
 ## DNS and VPS
 
@@ -31,7 +31,7 @@ cd deploy
 ./deploy.sh
 ```
 
-`deploy.sh` builds, starts, shows container status, waits for PostgreSQL, API, and Jellyfin health, then calls `https://<media host>/health`. It needs working DNS and ports 80/443 for Caddy certificate issuance. Verify manually:
+`deploy.sh` builds, starts, shows container status, waits for PostgreSQL, API, and Jellyfin health, checks `https://<media host>/health`, then syncs the movie catalog. It needs working DNS and ports 80/443 for Caddy certificate issuance. Verify manually:
 
 ```sh
 curl https://media.example.com/health
@@ -40,6 +40,8 @@ docker compose ps
 ```
 
 The API applies pending numbered migrations at startup before serving requests. `001_initial.sql` creates the V1 tables and Archive provider. For an explicit migration run, use `docker compose run --rm media-api /app/migrate`. Schema changes in later versions must use new numbered migrations; do not edit a migration already applied to production.
+
+The deployment also syncs up to `CATALOG_LIMIT` (default 20) manually selected classic Archive films into the `catalog-data` volume. The sync checks each item's rights metadata for a recognizable public-domain or Creative Commons marker and requires a direct-play source candidate. This metadata is a hint, not a legal determination. Each film has only a direct Archive `.strm` URL and a small `.nfo` file. To refresh the catalog later, run `cd deploy && docker compose --profile catalog run --rm catalog-sync`, then scan the Jellyfin library.
 
 ## Jellyfin and Apple TV
 
@@ -52,9 +54,14 @@ The API applies pending numbered migrations at startup before serving requests. 
 
    This publishes the plugin and copies its runtime files into `deploy/plugins/OnlineMedia/`. If built locally, copy the full plugin directory to the same path on the VPS. This path is mounted at `/config/plugins/OnlineMedia` in Jellyfin.
 3. Restart Jellyfin: `cd deploy && docker compose restart jellyfin`. In Dashboard → Plugins, confirm Online Media loaded. Open its configuration, enter `https://media.example.com`, the same `API_KEY` from `deploy/.env`, and a request timeout, then Save.
-4. Install Swiftfin on Apple TV, connect to `https://jellyfin.example.com`, and sign in. Open Channels → 在线影视 / Online Media → **Featured**, **Library**, or **Search Examples**. Featured browses Archive's open source movies collection. Library displays only items explicitly added through the Library API; it does not bulk import remote media into Jellyfin. Search Examples are labeled preset queries, not a text search box. Select a movie to load a direct-play candidate and play.
+4. In Jellyfin Web, open Channels → 在线影视 / Online Media → **Featured**, **Library**, or **Search Examples**. Featured browses Archive's open source movies collection. Library displays only items explicitly added through the Library API; it does not bulk import remote media into Jellyfin. Search Examples are labeled preset queries, not a text search box. Select a movie to load a direct-play candidate and play.
+5. In Jellyfin Dashboard → Libraries, add a **Movies** library named **在线影视** with folder `/media/online`. Disable remote metadata providers for this library so Jellyfin uses the supplied `movie.nfo` titles, then scan the library. On Apple TV or iPhone, open Swiftfin → Media → **在线影视** (the Movies library), and select a film. The older Channel entry has the same name but still shows “No Items” in Swiftfin; select the Movies library instead.
 
-The plugin calls the API for details and sources when Jellyfin requests media information, selects the first direct-play candidate, requests a signed URL, and gives that URL to Jellyfin as a remote source. Jellyfin should hand it to Swiftfin, which follows `/play` → 302 → Archive file. The `directPlay` field is a **container-level candidate flag** for MP4/M4V/MOV; it is not a codec probe or a guarantee of H.264/AAC compatibility. Explicit incompatible codec metadata excludes a candidate. The plugin does not probe or transcode video.
+**Swiftfin compatibility:** The current Swiftfin library screen does not browse Jellyfin Channel items. It queries the generic `/Items` endpoint and filters a `Channel` parent to live TV programs, while this plugin supplies channel folders and movies through `/Channels/{channelId}/Items`. The Channel can therefore appear in Swiftfin with “No Items” even when Jellyfin Web shows Featured and its films. The separate Movies library exposes standard movie items through `/Items` and is the Swiftfin entry point.
+
+The `.strm` entries point straight to stable `https://archive.org/download/...` URLs. Playback compatibility still depends on the chosen film's actual codecs and Swiftfin's player. Jellyfin may proxy or transcode if direct play fails, which can use VPS bandwidth; check the playback status before assuming zero video traffic.
+
+For the Jellyfin Web Channel, the plugin calls the API for details and sources, selects the first direct-play candidate, requests a signed URL, and gives that URL to Jellyfin as a remote source. The separate Movies library uses its `.strm` URLs instead. The `directPlay` field is a **container-level candidate flag** for MP4/M4V/MOV; it is not a codec probe or a guarantee of H.264/AAC compatibility. Explicit incompatible codec metadata excludes a candidate. The plugin does not probe or transcode video.
 
 ## API
 
@@ -117,7 +124,7 @@ Provider tests use `httptest.Server` and require no internet. Repository and end
 
 ## Limits and next steps
 
-V1 supports Internet Archive, a Jellyfin Channel, Swiftfin browsing, PostgreSQL metadata, and 302 direct redirects. Jellyfin's global text search does **not** search Archive. The Channel has Featured, Library, and clearly labeled Search Examples; arbitrary text search exists only at the Go `/api/v1/search` endpoint. An MP4 extension does not guarantee direct play. There is no automatic transcoding, source fallback, IPTV, health worker, subtitles, video proxy, or high availability. Actual Apple TV playback must be verified on your device and network after deployment.
+V1 supports Internet Archive, a Jellyfin Channel in Jellyfin Web, a standard Movies library for Swiftfin, PostgreSQL metadata, and 302 direct redirects. Swiftfin does not display the Channel's films; use the Movies library. Jellyfin's global text search does **not** search Archive beyond films already synced into the Movies library. The Channel has Featured, Library, and clearly labeled Search Examples; arbitrary text search exists only at the Go `/api/v1/search` endpoint. An MP4 extension does not guarantee direct play. There is no application-level source fallback, IPTV, health worker, subtitles, video proxy, or high availability. Actual Apple TV playback must be verified on your device and network.
 
 This V1 release stops at deployment and real-device verification. Future work should be chosen after Apple TV playback is confirmed.
 
@@ -143,13 +150,13 @@ The migration runner records filenames in `schema_migrations` and applies pendin
 ## Apple TV Test Checklist
 
 1. Open Swiftfin on Apple TV and log in to Jellyfin.
-2. Open Channels → Online Media → Featured.
+2. Open Media → 在线影视 (the Movies library) and select a film.
 3. Select a film and press Play.
 4. On the server, run `cd deploy && docker compose logs -f jellyfin media-api`.
-5. Confirm `Online Media item`, `Online Media selected source`, `Online Media play URL created`, and `play redirect` with `sourceId` and `targetHost=archive.org`.
+5. Confirm the film starts from an Archive URL and check Jellyfin's playback status for direct play. The plugin's `Online Media item` and signed `/play` logs apply to the separate Jellyfin Web Channel, not this Movies library.
 6. Confirm the film starts and the Apple TV player reports direct play where available.
 
-Run `docker stats` during playback and watch the `media-api` NET I/O counters and overall VPS outbound traffic. The API should show only small control requests. Sustained MB/s growth means investigate whether Jellyfin is transcoding or proxying instead of Swiftfin fetching the Archive file directly.
+Run `docker stats` during playback and watch the `jellyfin` NET I/O counters and overall VPS outbound traffic. Sustained MB/s growth means investigate whether Jellyfin is transcoding or proxying instead of Swiftfin fetching the Archive file directly.
 
 ## Troubleshooting order
 
@@ -157,8 +164,11 @@ Run `docker stats` during playback and watch the `media-api` NET I/O counters an
 |---|---|
 | Plugin absent | Jellyfin logs, `/config/plugins/OnlineMedia`, `OnlineMedia.dll`, `net10.0` build, Jellyfin 12.1 SDK match |
 | Channel opens but is empty | Media API URL and key in plugin settings, `/api/v1/featured`, container DNS and `/health` |
+| Channel works in Jellyfin Web but shows “No Items” in Swiftfin | Open the separate Movies library under Media; Swiftfin does not browse the Channel's folders |
+| Movies library is empty | Check `docker compose --profile catalog run --rm catalog-sync`, the library path `/media/online`, and rescan the Movies library |
 | Selecting a film fails | `/api/v1/media/:id`, `/sources`, candidate count, `directPlay` and `requiresProxy` |
-| Play fails | `/play-url`, signed `/play` 302 with `curl -I`, Archive source availability, Swiftfin codec support |
+| Movies library playback fails | Archive URL in `movie.strm`, HTTP redirect, Jellyfin playback status, Swiftfin codec support |
+| Channel playback fails in Jellyfin Web | `/play-url`, signed `/play` 302 with `curl -I`, Archive source availability |
 | VPS traffic is high | Jellyfin playback status for transcoding/proxying and whether Swiftfin is using direct play |
 
 Go API supports arbitrary text search at `/api/v1/search`. Swiftfin/Jellyfin Channel V1 does not yet provide arbitrary text input; its UI is Featured, Library, and Search Examples.

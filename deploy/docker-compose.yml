@@ -17,6 +17,7 @@ services:
       retries: 5
   media-api:
     build: ../media-source-server
+    image: online-media-api:local
     restart: unless-stopped
     environment:
       APP_ENV: production
@@ -45,12 +46,22 @@ services:
       - jellyfin-config:/config
       - jellyfin-cache:/cache
       - ./plugins:/config/plugins
+      - catalog-data:/media/online:ro
     networks: [media-network]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8096/health"]
       interval: 30s
       timeout: 5s
       retries: 5
+  catalog-sync:
+    profiles: [catalog]
+    image: online-media-api:local
+    user: "0:0"
+    command: ["/app/catalog-sync"]
+    environment:
+      CATALOG_LIMIT: ${CATALOG_LIMIT:-20}
+    volumes:
+      - catalog-data:/catalog
   caddy:
     image: caddy:2.10.2-alpine
     restart: unless-stopped
@@ -73,6 +84,7 @@ volumes:
   jellyfin-cache:
   caddy-data:
   caddy-config:
+  catalog-data:
 networks:
   media-network:
     driver: bridge

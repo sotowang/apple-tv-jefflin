@@ -28,6 +28,8 @@ echo '[OK] caddy running'
 health="$(curl --fail --silent --show-error --connect-timeout 10 --max-time 30 "${PUBLIC_MEDIA_BASE_URL%/}/health")"
 [[ "$health" == *'"status":"ok"'* ]] || { echo 'public Media API health failed' >&2; exit 1; }
 echo '[OK] public HTTPS health'
+docker compose --profile catalog run --rm catalog-sync
+echo '[OK] online movie catalog synced'
 if [[ "${RUN_SMOKE_TEST:-false}" == true ]]; then
   MEDIA_API_URL="$PUBLIC_MEDIA_BASE_URL" ./smoke-test.sh
 fi
