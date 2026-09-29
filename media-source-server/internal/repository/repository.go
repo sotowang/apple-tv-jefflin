@@ -30,7 +30,7 @@ func convertMedia(m dbgen.Medium, provider string) media.Media {
 	if m.Year.Valid {
 		y = int(m.Year.Int32)
 	}
-	return media.Media{ID: provider + ":" + m.ExternalID, Type: m.Type, Title: m.Title, OriginalTitle: m.OriginalTitle, Year: y, Overview: m.Overview, PosterURL: m.PosterUrl, BackdropURL: m.BackdropUrl, Provider: provider, ExternalID: m.ExternalID, LicenseURL: m.LicenseUrl, Rights: m.Rights}
+	return media.Media{ID: provider + ":" + m.ExternalID, Type: m.Type, Title: m.Title, OriginalTitle: m.OriginalTitle, Year: y, Overview: m.Overview, PosterURL: m.PosterUrl, BackdropURL: m.BackdropUrl, Provider: provider, ExternalID: m.ExternalID, LicenseURL: m.LicenseUrl, Rights: m.Rights, RightsStatus: media.ClassifyRights(m.LicenseUrl, m.Rights)}
 }
 func convertSource(s dbgen.Source, provider string) media.Source {
 	b := int64(0)

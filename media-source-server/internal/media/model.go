@@ -3,33 +3,35 @@ package media
 import "context"
 
 type Media struct {
-	ID            string `json:"id"`
-	Type          string `json:"type"`
-	Title         string `json:"title"`
-	OriginalTitle string `json:"originalTitle,omitempty"`
-	Year          int    `json:"year,omitempty"`
-	Overview      string `json:"overview,omitempty"`
-	PosterURL     string `json:"posterUrl,omitempty"`
-	BackdropURL   string `json:"backdropUrl,omitempty"`
-	Provider      string `json:"provider"`
-	ExternalID    string `json:"externalId"`
-	LicenseURL    string `json:"licenseUrl,omitempty"`
-	Rights        string `json:"rights,omitempty"`
+	ID            string       `json:"id"`
+	Type          string       `json:"type"`
+	Title         string       `json:"title"`
+	OriginalTitle string       `json:"originalTitle,omitempty"`
+	Year          int          `json:"year,omitempty"`
+	Overview      string       `json:"overview,omitempty"`
+	PosterURL     string       `json:"posterUrl,omitempty"`
+	BackdropURL   string       `json:"backdropUrl,omitempty"`
+	Provider      string       `json:"provider"`
+	ExternalID    string       `json:"externalId"`
+	LicenseURL    string       `json:"licenseUrl,omitempty"`
+	Rights        string       `json:"rights,omitempty"`
+	RightsStatus  RightsStatus `json:"rightsStatus,omitempty"`
 }
 type Source struct {
-	ID            string `json:"id"`
-	MediaID       string `json:"mediaId"`
-	Provider      string `json:"provider"`
-	ExternalID    string `json:"externalId,omitempty"`
-	FileName      string `json:"fileName"`
-	OriginalURL   string `json:"-"`
-	Quality       string `json:"quality,omitempty"`
-	Container     string `json:"container,omitempty"`
-	VideoCodec    string `json:"videoCodec,omitempty"`
-	AudioCodec    string `json:"audioCodec,omitempty"`
-	Bitrate       int64  `json:"bitrate,omitempty"`
-	DirectPlay    bool   `json:"directPlay"`
-	RequiresProxy bool   `json:"requiresProxy"`
+	ID          string `json:"id"`
+	MediaID     string `json:"mediaId"`
+	Provider    string `json:"provider"`
+	ExternalID  string `json:"externalId,omitempty"`
+	FileName    string `json:"fileName"`
+	OriginalURL string `json:"-"`
+	Quality     string `json:"quality,omitempty"`
+	Container   string `json:"container,omitempty"`
+	VideoCodec  string `json:"videoCodec,omitempty"`
+	AudioCodec  string `json:"audioCodec,omitempty"`
+	Bitrate     int64  `json:"bitrate,omitempty"`
+	// DirectPlay is a container-level direct-play candidate; codecs are not probed.
+	DirectPlay    bool `json:"directPlay"`
+	RequiresProxy bool `json:"requiresProxy"`
 }
 type ResolvedStream struct {
 	URL           string
@@ -46,4 +48,9 @@ type Provider interface {
 	GetMedia(context.Context, string) (*Media, error)
 	GetSources(context.Context, Media) ([]Source, error)
 	Resolve(context.Context, Source) (*ResolvedStream, error)
+}
+
+// BrowseProvider is optional; browsing never reuses a text-search query.
+type BrowseProvider interface {
+	Featured(context.Context, int, int) ([]Media, error)
 }

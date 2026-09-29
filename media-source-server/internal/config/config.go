@@ -8,8 +8,8 @@ import (
 )
 
 type Config struct {
-	Port, PublicBaseURL, DatabaseURL, APIKey, SigningSecret, LogLevel string
-	RequestTimeout, SearchTTL, MediaTTL, SourceTTL                    time.Duration
+	Port, PublicBaseURL, DatabaseURL, APIKey, SigningSecret, LogLevel, AppEnv string
+	RequestTimeout, SearchTTL, MediaTTL, SourceTTL                            time.Duration
 }
 
 func env(k, def string) string {
@@ -21,7 +21,7 @@ func env(k, def string) string {
 }
 func duration(k, def string) (time.Duration, error) { return time.ParseDuration(env(k, def)) }
 func Load() (Config, error) {
-	c := Config{Port: env("HTTP_PORT", "8080"), PublicBaseURL: strings.TrimRight(env("PUBLIC_BASE_URL", ""), "/"), DatabaseURL: os.Getenv("DATABASE_URL"), APIKey: os.Getenv("API_KEY"), SigningSecret: os.Getenv("PLAY_URL_SIGNING_SECRET"), LogLevel: env("LOG_LEVEL", "info")}
+	c := Config{Port: env("HTTP_PORT", "8080"), PublicBaseURL: strings.TrimRight(env("PUBLIC_BASE_URL", ""), "/"), DatabaseURL: os.Getenv("DATABASE_URL"), APIKey: os.Getenv("API_KEY"), SigningSecret: os.Getenv("PLAY_URL_SIGNING_SECRET"), LogLevel: env("LOG_LEVEL", "info"), AppEnv: env("APP_ENV", "production")}
 	var e error
 	c.RequestTimeout, e = duration("REQUEST_TIMEOUT", "10s")
 	if e != nil {

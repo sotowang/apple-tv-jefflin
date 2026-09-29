@@ -5,7 +5,7 @@ A personal, zero video storage Internet Archive browser for Jellyfin and Swiftfi
 ## Layout
 
 - `media-source-server/`: Go API, sqlc queries, SQL migration, Archive provider, tests.
-- `jellyfin-online-media-plugin/`: Jellyfin 12.1 Channel plugin and configuration page.
+- `jellyfin-online-media-plugin/`: Jellyfin 12.1 Channel plugin, shared Media API client, and configuration page.
 - `deploy/`: four service Docker Compose deployment and Caddy HTTPS routing.
 
 ## DNS and VPS
@@ -52,9 +52,9 @@ The API runs `001_initial.sql` at startup before serving requests. This idempote
 
    This runs `dotnet build -c Release` and copies `OnlineMedia.dll` into `deploy/plugins/OnlineMedia/`. If built locally, copy that DLL to the same path on the VPS. This path is mounted at `/config/plugins/OnlineMedia` in Jellyfin.
 3. Restart Jellyfin: `cd deploy && docker compose restart jellyfin`. In Dashboard → Plugins, confirm Online Media loaded. Open its configuration, enter `https://media.example.com`, the same `API_KEY` from `deploy/.env`, and a request timeout, then Save.
-4. Install Swiftfin on Apple TV, connect to `https://jellyfin.example.com`, and sign in. Open Channels → 在线影视 / Online Media → Movies or Search. Search currently offers selectable query folders; arbitrary text queries use the Go API. Select a movie to load sources and play.
+4. Install Swiftfin on Apple TV, connect to `https://jellyfin.example.com`, and sign in. Open Channels → 在线影视 / Online Media → **Featured**, **Library**, or **Search Examples**. Featured browses Archive's open source movies collection. Library displays only items explicitly added through the Library API; it does not bulk import remote media into Jellyfin. Search Examples are labeled preset queries, not a text search box. Select a movie to load a direct-play candidate and play.
 
-The plugin calls the API for details and sources when Jellyfin requests media information, requests a signed URL, and gives that URL to Jellyfin as a remote direct play source. Jellyfin should hand it to Swiftfin, which follows `/play` → 302 → Archive file. Direct play depends on the specific file codecs and Swiftfin/Jellyfin behavior; this V1 does not transcode incompatible media.
+The plugin calls the API for details and sources when Jellyfin requests media information, selects the first direct-play candidate, requests a signed URL, and gives that URL to Jellyfin as a remote source. Jellyfin should hand it to Swiftfin, which follows `/play` → 302 → Archive file. The `directPlay` field is a **container-level candidate flag** for MP4/M4V/MOV; it is not a codec probe or a guarantee of H.264/AAC compatibility. Explicit incompatible codec metadata excludes a candidate. The plugin does not probe or transcode video.
 
 ## API
 
@@ -65,6 +65,7 @@ All `/api/v1` calls require `X-API-Key`; `/health` and signed `/play` do not. Er
 | GET | `/health` | Service status |
 | GET | `/api/v1/providers` | Enabled providers |
 | GET | `/api/v1/search?q=...&page=1&limit=20` | Archive movie title search, transient results |
+| GET | `/api/v1/featured?page=1&limit=20` | Archive collection browse, independent of title search |
 | GET | `/api/v1/media/:id` | Detail and media upsert |
 | GET | `/api/v1/media/:id/sources` | Sources and source upsert |
 | GET | `/api/v1/library` | Saved items |
@@ -72,8 +73,11 @@ All `/api/v1` calls require `X-API-Key`; `/health` and signed `/play` do not. Er
 | DELETE | `/api/v1/library/:mediaId` | Remove item |
 | POST | `/api/v1/sources/:id/play-url` | Ten minute HMAC signed link |
 | GET | `/play/:sourceId?expires=...&token=...` | Validate then redirect 302 |
+| HEAD | `/play/:sourceId?expires=...&token=...` | Validate then redirect 302 for HEAD probes |
 
-Search IDs use `archive:<identifier>` as external API references; PostgreSQL media and source primary keys are UUIDs. Search does not fill PostgreSQL. Detail requests save media; source requests save stable file references. Transient CDN URLs and video bytes are never stored. Public Archive access alone does not establish reuse rights: inspect `licenseUrl`, `rights`, and collection metadata before relying on an item.
+Search IDs use `archive:<identifier>` as external API references; PostgreSQL media and source primary keys are UUIDs. Search and Featured do not fill PostgreSQL. Detail requests save media; source requests save stable file references. Transient CDN URLs and video bytes are never stored. Detail returns `rightsStatus`: `verified` for recognizable public domain/Creative Commons metadata, `restricted` for explicit restriction, or `unknown`. This is a metadata hint, not a legal determination. Public Archive access and collection membership alone do not establish reuse rights.
+
+In non-production environments (`APP_ENV != production`), authenticated `GET /api/v1/debug/media/:id` returns media, sources, selected candidate, and resolved URL **host only**. The route is absent in production. The Go API does not serve video Range data: after the signed `/play` redirect, the client communicates directly with Archive/CDN, which handles Range requests. No video bytes pass through this VPS.
 
 Example:
 
@@ -113,6 +117,6 @@ Provider tests use `httptest.Server` and require no internet. Repository and end
 
 ## Limits and next steps
 
-V1 integrates only Internet Archive movies. The Channel API provides browsing and fixed search folders in Swiftfin but no arbitrary text field; use the API for custom queries. The plugin supplies only MP4/M4V/MOV candidates as direct play sources; a container extension does not prove H.264/AAC codecs. An incompatible file may fail to play. There is no source fallback, health worker, subtitles, video proxy, FFmpeg conversion, or high availability. Actual Apple TV playback must be verified on your device and network after deployment.
+V1 supports Internet Archive, a Jellyfin Channel, Swiftfin browsing, PostgreSQL metadata, and 302 direct redirects. Jellyfin's global text search does **not** search Archive. The Channel has Featured, Library, and clearly labeled Search Examples; arbitrary text search exists only at the Go `/api/v1/search` endpoint. An MP4 extension does not guarantee direct play. There is no automatic transcoding, source fallback, IPTV, health worker, subtitles, video proxy, or high availability. Actual Apple TV playback must be verified on your device and network after deployment.
 
 Provider logic lives behind the Go `Provider` interface. V2 can add legal IPTV/VOD providers, live TV and EPG, health checks, ranking, favorites, and episode mapping. PostgreSQL remains the system of record; add Redis only if multiple API instances or shared short lived state require it.

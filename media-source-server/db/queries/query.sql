@@ -14,7 +14,7 @@ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 ON CONFLICT(provider_id,external_id) DO UPDATE SET type=excluded.type,title=excluded.title,original_title=excluded.original_title,year=excluded.year,overview=excluded.overview,poster_url=excluded.poster_url,backdrop_url=excluded.backdrop_url,license_url=excluded.license_url,rights=excluded.rights,updated_at=now()
 RETURNING *;
 -- name: GetSourcesByMediaID :many
-SELECT * FROM sources WHERE media_id=$1 AND status='available' ORDER BY direct_play DESC, file_name;
+SELECT * FROM sources WHERE media_id=$1 AND status='available' ORDER BY direct_play DESC, CASE container WHEN 'mp4' THEN 0 WHEN 'm4v' THEN 1 WHEN 'mov' THEN 2 WHEN 'webm' THEN 3 WHEN 'mkv' THEN 4 ELSE 5 END, CASE WHEN quality ~ '^[0-9]+p$' THEN substring(quality from '^[0-9]+')::int ELSE 0 END DESC, file_name;
 -- name: GetSourceByID :one
 SELECT * FROM sources WHERE id=$1 AND status='available';
 -- name: UpsertSource :one

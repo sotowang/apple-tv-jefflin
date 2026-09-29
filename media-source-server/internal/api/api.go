@@ -74,13 +74,18 @@ func (a *API) Router() *gin.Engine {
 	v := r.Group("/api/v1", a.auth())
 	v.GET("/providers", a.providers)
 	v.GET("/search", a.search)
+	v.GET("/featured", a.featured)
 	v.GET("/media/:id", a.detail)
 	v.GET("/media/:id/sources", a.sources)
+	if !strings.EqualFold(a.Config.AppEnv, "production") {
+		v.GET("/debug/media/:id", a.debugMedia)
+	}
 	v.GET("/library", a.library)
 	v.POST("/library/:mediaId", a.addLibrary)
 	v.DELETE("/library/:mediaId", a.removeLibrary)
 	v.POST("/sources/:id/play-url", a.playURL)
 	r.GET("/play/:sourceId", a.play)
+	r.HEAD("/play/:sourceId", a.play)
 	return r
 }
 func parsePage(c *gin.Context) (int, int, bool) {
@@ -131,6 +136,39 @@ func (a *API) search(c *gin.Context) {
 		found, e := p.Search(c.Request.Context(), media.SearchQuery{Query: q, Page: page, Limit: limit})
 		if e != nil {
 			a.providerFailure(c, e)
+			return
+		}
+		items = append(items, found...)
+	}
+	a.SearchCache.Set(key, items, a.Config.SearchTTL)
+	c.JSON(200, gin.H{"items": items})
+}
+func (a *API) featured(c *gin.Context) {
+	page, limit, ok := parsePage(c)
+	if !ok {
+		return
+	}
+	key := fmt.Sprintf("featured:%d:%d", page, limit)
+	if found, ok := a.SearchCache.Get(key); ok {
+		c.JSON(200, gin.H{"items": found})
+		return
+	}
+	items := []media.Media{}
+	for name, provider := range a.Providers {
+		browser, ok := provider.(media.BrowseProvider)
+		if !ok {
+			continue
+		}
+		if _, err := a.Repo.Provider(c.Request.Context(), name); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
+			}
+			failure(c, 500, "DATABASE_ERROR", "database error")
+			return
+		}
+		found, err := browser.Featured(c.Request.Context(), page, limit)
+		if err != nil {
+			a.providerFailure(c, err)
 			return
 		}
 		items = append(items, found...)
@@ -213,29 +251,65 @@ func (a *API) sources(c *gin.Context) {
 		a.providerFailure(c, e)
 		return
 	}
-	if cached, ok := a.SourcesCache.Get(m.ID); ok {
-		c.JSON(200, gin.H{"sources": cached})
+	list, e := a.getSources(c.Request.Context(), m)
+	if e != nil {
+		a.providerFailure(c, e)
 		return
 	}
-	list, e := a.Repo.Sources(c.Request.Context(), m.Provider, m.ExternalID)
-	if e != nil {
-		failure(c, 500, "DATABASE_ERROR", "database error")
-		return
+	c.JSON(200, gin.H{"sources": list})
+}
+func (a *API) getSources(ctx context.Context, m media.Media) ([]media.Source, error) {
+	if cached, ok := a.SourcesCache.Get(m.ID); ok {
+		return cached, nil
+	}
+	list, err := a.Repo.Sources(ctx, m.Provider, m.ExternalID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errDatabase, err)
 	}
 	if len(list) == 0 {
-		list, e = a.Providers[m.Provider].GetSources(c.Request.Context(), m)
-		if e != nil {
-			a.providerFailure(c, e)
-			return
+		list, err = a.Providers[m.Provider].GetSources(ctx, m)
+		if err != nil {
+			return nil, err
 		}
-		list, e = a.Repo.UpsertSources(c.Request.Context(), m, list)
-		if e != nil {
-			failure(c, 500, "DATABASE_ERROR", "database error")
-			return
+		list, err = a.Repo.UpsertSources(ctx, m, list)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", errDatabase, err)
 		}
 	}
 	a.SourcesCache.Set(m.ID, list, a.Config.SourceTTL)
-	c.JSON(200, gin.H{"sources": list})
+	return list, nil
+}
+func (a *API) debugMedia(c *gin.Context) {
+	m, err := a.getMedia(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		a.providerFailure(c, err)
+		return
+	}
+	sources, err := a.getSources(c.Request.Context(), m)
+	if err != nil {
+		a.providerFailure(c, err)
+		return
+	}
+	var selected *media.Source
+	host := ""
+	for i := range sources {
+		if sources[i].DirectPlay && !sources[i].RequiresProxy {
+			selected = &sources[i]
+			break
+		}
+	}
+	if selected != nil {
+		resolved, resolveErr := a.Providers[selected.Provider].Resolve(c.Request.Context(), *selected)
+		if resolveErr != nil {
+			a.providerFailure(c, resolveErr)
+			return
+		}
+		parsed, parseErr := url.Parse(resolved.URL)
+		if parseErr == nil {
+			host = parsed.Hostname()
+		}
+	}
+	c.JSON(200, gin.H{"media": m, "sources": sources, "selectedSource": selected, "resolvedUrlHost": host})
 }
 func (a *API) library(c *gin.Context) {
 	page, limit, ok := parsePage(c)
@@ -287,6 +361,7 @@ func (a *API) playURL(c *gin.Context) {
 	v := url.Values{}
 	v.Set("expires", strconv.FormatInt(expires.Unix(), 10))
 	v.Set("token", security.Sign(a.Config.SigningSecret, id, expires.Unix()))
+	slog.Info("play URL created", "sourceId", id)
 	c.JSON(200, gin.H{"url": a.Config.PublicBaseURL + "/play/" + url.PathEscape(id) + "?" + v.Encode(), "expiresAt": expires.UTC().Format(time.RFC3339)})
 }
 func (a *API) play(c *gin.Context) {
@@ -330,5 +405,11 @@ func (a *API) play(c *gin.Context) {
 		failure(c, 502, "NO_PLAYABLE_SOURCE", "direct HTTPS source unavailable")
 		return
 	}
+	parsed, parseErr := url.Parse(resolved.URL)
+	if parseErr != nil || parsed.Hostname() == "" {
+		failure(c, 502, "NO_PLAYABLE_SOURCE", "invalid direct source URL")
+		return
+	}
+	slog.Info("play redirect", "sourceId", id, "provider", s.Provider, "targetHost", parsed.Hostname())
 	c.Redirect(http.StatusFound, resolved.URL)
 }

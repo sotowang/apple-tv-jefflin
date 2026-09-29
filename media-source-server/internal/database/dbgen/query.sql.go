@@ -145,7 +145,7 @@ func (q *Queries) GetSourceByID(ctx context.Context, id pgtype.UUID) (Source, er
 }
 
 const getSourcesByMediaID = `-- name: GetSourcesByMediaID :many
-SELECT id, media_id, provider_id, external_id, file_name, original_url, quality, container, video_codec, audio_codec, bitrate, direct_play, requires_proxy, status, last_checked_at, created_at, updated_at FROM sources WHERE media_id=$1 AND status='available' ORDER BY direct_play DESC, file_name
+SELECT id, media_id, provider_id, external_id, file_name, original_url, quality, container, video_codec, audio_codec, bitrate, direct_play, requires_proxy, status, last_checked_at, created_at, updated_at FROM sources WHERE media_id=$1 AND status='available' ORDER BY direct_play DESC, CASE container WHEN 'mp4' THEN 0 WHEN 'm4v' THEN 1 WHEN 'mov' THEN 2 WHEN 'webm' THEN 3 WHEN 'mkv' THEN 4 ELSE 5 END, CASE WHEN quality ~ '^[0-9]+p$' THEN substring(quality from '^[0-9]+')::int ELSE 0 END DESC, file_name
 `
 
 func (q *Queries) GetSourcesByMediaID(ctx context.Context, mediaID pgtype.UUID) ([]Source, error) {
