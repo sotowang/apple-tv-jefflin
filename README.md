@@ -1,10 +1,18 @@
-# Online Media V1
+# Online Media V2 Phase 1
 
-A personal, zero video storage Internet Archive browser for Jellyfin and Swiftfin. PostgreSQL stores metadata, source references, and library choices. The Go service issues ten minute signed play links for the Jellyfin Channel. A catalog sync also writes `.strm` links and `.nfo` metadata to a standard Jellyfin Movies library for Swiftfin. The catalog sync does not download video; Jellyfin may fetch video when probing or transcoding.
+A personal, zero video storage media catalog for Jellyfin and Swiftfin. TMDB supplies movie and TV metadata; Internet Archive continues to supply its existing movie metadata, playable sources, Featured browse, and the Swiftfin Movies catalog. PostgreSQL stores selected metadata, source references, and library choices. The Go service issues ten minute signed play links for the Jellyfin Channel. A catalog sync writes `.strm` links and `.nfo` metadata to a standard Jellyfin Movies library for Swiftfin. The catalog sync does not download video; Jellyfin may fetch video when probing or transcoding.
+
+## V2 Architecture
+
+The Go API uses a provider registry with separate `MetadataProvider` and `SourceProvider` interfaces. TMDB supplies Chinese localized Movie and TV metadata, including seasons and episodes. **TMDB provides metadata only. TMDB does not provide video streams.** The existing Internet Archive provider remains both a metadata provider and a movie source provider. A TMDB item with no matching source provider returns an empty `items` array from its sources endpoint. Episode sources are reserved for a later phase.
+
+Search is transient: results do not create database rows. Detail requests upsert metadata into PostgreSQL. The API uses its existing in-memory TTL cache for search, detail, seasons, episodes, and sources; no Redis service is needed. Search ranks exact localized titles before original-title matches, prefixes, and fuzzy matches. TMDB popularity only breaks ties within a rank. Stable external IDs use `tmdb:movie:<id>`, `tmdb:tv:<id>`, and `archive:<identifier>`; database UUIDs stay internal.
+
+Migration `002_media_v2.sql` adds release date, language, TMDB ID, and TV counts to `media`, plus `seasons` and `episodes` tables. It leaves `001_initial.sql`, existing Archive sources, and library data intact. The API applies this migration at startup. Existing Jellyfin Channel, signed play, catalog sync, and Swiftfin Movies library continue to use Archive sources; TMDB TV entries do not become playable in Swiftfin during this phase.
 
 ## Layout
 
-- `media-source-server/`: Go API, sqlc queries, SQL migration, Archive provider, tests.
+- `media-source-server/`: Go API, sqlc queries, migrations, TMDB metadata provider, Archive provider, tests.
 - `jellyfin-online-media-plugin/`: Jellyfin 12.1 Channel plugin, shared Media API client, and configuration page.
 - `deploy/`: Docker Compose deployment, Caddy HTTPS routing, and a shared metadata-only movie catalog volume.
 
@@ -24,6 +32,14 @@ openssl rand -hex 32   # PLAY_URL_SIGNING_SECRET
 ```
 
 Edit `deploy/.env`: set both hostnames, `PUBLIC_MEDIA_BASE_URL=https://<media host>`, and the three distinct generated secrets. Keep the file private. The values must be set before Compose will start. The media API also requires HTTPS for its public URL. For a normal deployment:
+
+To enable TMDB metadata search, set `TMDB_API_TOKEN` to a TMDB API Read Access Token. `TMDB_LANGUAGE` defaults to `zh-CN`; `TMDB_REGION` defaults to `CN`. An empty token disables TMDB without stopping the API or Archive. The token is sent only to TMDB as a Bearer credential.
+
+```env
+TMDB_API_TOKEN=<TMDB API Read Access Token>
+TMDB_LANGUAGE=zh-CN
+TMDB_REGION=CN
+```
 
 ```sh
 ./jellyfin-online-media-plugin/build.sh
@@ -71,10 +87,13 @@ All `/api/v1` calls require `X-API-Key`; `/health` and signed `/play` do not. Er
 |---|---|---|
 | GET | `/health` | Service status |
 | GET | `/api/v1/providers` | Enabled providers |
-| GET | `/api/v1/search?q=...&page=1&limit=20` | Archive movie title search, transient results |
+| GET | `/api/v1/search?q=...&page=1&limit=20` | TMDB and Archive metadata search, transient results; optional `provider=archive` or `provider=tmdb` |
 | GET | `/api/v1/featured?page=1&limit=20` | Archive collection browse, independent of title search |
 | GET | `/api/v1/media/:id` | Detail and media upsert |
 | GET | `/api/v1/media/:id/sources` | Sources and source upsert |
+| GET | `/api/v1/media/:id/seasons` | TV seasons |
+| GET | `/api/v1/media/:id/seasons/:seasonNumber/episodes` | TV episodes |
+| GET | `/api/v1/media/:id/seasons/:seasonNumber/episodes/:episodeNumber/sources` | Episode sources; empty until a source provider supports them |
 | GET | `/api/v1/library` | Saved items |
 | POST | `/api/v1/library/:mediaId` | Save item |
 | DELETE | `/api/v1/library/:mediaId` | Remove item |
@@ -83,6 +102,19 @@ All `/api/v1` calls require `X-API-Key`; `/health` and signed `/play` do not. Er
 | HEAD | `/play/:sourceId?expires=...&token=...` | Validate then redirect 302 for HEAD probes |
 
 Search IDs use `archive:<identifier>` as external API references; PostgreSQL media and source primary keys are UUIDs. Search and Featured do not fill PostgreSQL. Detail requests save media; source requests save stable file references. Transient CDN URLs and video bytes are never stored. Detail returns `rightsStatus`: `verified` for recognizable public domain/Creative Commons metadata, `restricted` for explicit restriction, or `unknown`. This is a metadata hint, not a legal determination. Public Archive access and collection membership alone do not establish reuse rights.
+
+V2 search responses contain `items`, `page`, and `limit`. Sources responses contain both `sources` (for existing clients) and `items` (for V2 clients). Existing Archive response fields and routes remain available. TV detail exposes `type`, `releaseDate`, `originalLanguage`, `tmdbId`, `seasonCount`, and `episodeCount` where present. TMDB poster, backdrop, and still paths are returned as complete HTTPS URLs.
+
+```sh
+curl -G -H "X-API-Key: $API_KEY" --data-urlencode 'q=凡人修仙传' 'https://media.example.com/api/v1/search'
+curl -H "X-API-Key: $API_KEY" 'https://media.example.com/api/v1/media/tmdb:tv:XXX'
+curl -H "X-API-Key: $API_KEY" 'https://media.example.com/api/v1/media/tmdb:tv:XXX/seasons'
+curl -H "X-API-Key: $API_KEY" 'https://media.example.com/api/v1/media/tmdb:tv:XXX/seasons/1/episodes'
+curl -H "X-API-Key: $API_KEY" 'https://media.example.com/api/v1/media/tmdb:tv:XXX/sources'
+curl -G -H "X-API-Key: $API_KEY" --data-urlencode 'q=night of the living dead' 'https://media.example.com/api/v1/search?provider=archive'
+```
+
+Replace `XXX` with the numeric ID returned by search. The same routes work against `http://localhost:8080` during local development, provided the required API configuration and PostgreSQL are running.
 
 In non-production environments (`APP_ENV != production`), authenticated `GET /api/v1/debug/media/:id` returns media, sources, selected candidate, and a `resolved` object containing host, container, directPlay, and proxyRequired, without the full URL. The route is absent in production. The Go API does not serve video Range data: after the signed `/play` redirect, the client communicates directly with Archive/CDN, which handles Range requests. No video bytes pass through this VPS.
 
@@ -124,9 +156,9 @@ Provider tests use `httptest.Server` and require no internet. Repository and end
 
 ## Limits and next steps
 
-V1 supports Internet Archive, a Jellyfin Channel in Jellyfin Web, a standard Movies library for Swiftfin, PostgreSQL metadata, and 302 direct redirects. Swiftfin does not display the Channel's films; use the Movies library. Jellyfin's global text search does **not** search Archive beyond films already synced into the Movies library. The Channel has Featured, Library, and clearly labeled Search Examples; arbitrary text search exists only at the Go `/api/v1/search` endpoint. An MP4 extension does not guarantee direct play. There is no application-level source fallback, IPTV, health worker, subtitles, video proxy, or high availability. Actual Apple TV playback must be verified on your device and network.
+V2 Phase 1 adds TMDB metadata and TV browsing to the Go API. Swiftfin does not display the Channel's films; use the Movies library. Jellyfin's global text search does **not** search remote metadata beyond films already synced into the Movies library. The Channel has Featured, Library, and clearly labeled Search Examples; arbitrary text search exists only at the Go `/api/v1/search` endpoint. An MP4 extension does not guarantee direct play. There is no application-level source fallback, IPTV, health worker, subtitles, video proxy, or high availability. Actual Apple TV playback must be verified on your device and network.
 
-This V1 release stops at deployment and real-device verification. Future work should be chosen after Apple TV playback is confirmed.
+V2 Phase 2 may add legitimate TV and episode source providers, source matching across metadata catalogs, playback integration for TV in Jellyfin/Swiftfin, and a text search UI. Phase 1 does not add video scraping, downloads, proxies, torrents, DRM bypass, Redis, or Elasticsearch.
 
 ## Release and plugin compatibility
 

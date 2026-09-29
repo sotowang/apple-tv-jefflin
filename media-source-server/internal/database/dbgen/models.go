@@ -8,6 +8,20 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type Episode struct {
+	ID             pgtype.UUID        `json:"id"`
+	SeasonID       pgtype.UUID        `json:"season_id"`
+	EpisodeNumber  int32              `json:"episode_number"`
+	Name           string             `json:"name"`
+	Overview       string             `json:"overview"`
+	AirDate        pgtype.Date        `json:"air_date"`
+	RuntimeMinutes int32              `json:"runtime_minutes"`
+	StillUrl       string             `json:"still_url"`
+	ExternalID     string             `json:"external_id"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
 type LibraryItem struct {
 	ID        pgtype.UUID        `json:"id"`
 	MediaID   pgtype.UUID        `json:"media_id"`
@@ -16,20 +30,25 @@ type LibraryItem struct {
 }
 
 type Medium struct {
-	ID            pgtype.UUID        `json:"id"`
-	Type          string             `json:"type"`
-	Title         string             `json:"title"`
-	OriginalTitle string             `json:"original_title"`
-	Year          pgtype.Int4        `json:"year"`
-	Overview      string             `json:"overview"`
-	PosterUrl     string             `json:"poster_url"`
-	BackdropUrl   string             `json:"backdrop_url"`
-	ProviderID    pgtype.UUID        `json:"provider_id"`
-	ExternalID    string             `json:"external_id"`
-	LicenseUrl    string             `json:"license_url"`
-	Rights        string             `json:"rights"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	ID               pgtype.UUID        `json:"id"`
+	Type             string             `json:"type"`
+	Title            string             `json:"title"`
+	OriginalTitle    string             `json:"original_title"`
+	Year             pgtype.Int4        `json:"year"`
+	Overview         string             `json:"overview"`
+	PosterUrl        string             `json:"poster_url"`
+	BackdropUrl      string             `json:"backdrop_url"`
+	ProviderID       pgtype.UUID        `json:"provider_id"`
+	ExternalID       string             `json:"external_id"`
+	LicenseUrl       string             `json:"license_url"`
+	Rights           string             `json:"rights"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	ReleaseDate      pgtype.Date        `json:"release_date"`
+	OriginalLanguage string             `json:"original_language"`
+	TmdbID           pgtype.Int4        `json:"tmdb_id"`
+	SeasonCount      int32              `json:"season_count"`
+	EpisodeCount     int32              `json:"episode_count"`
 }
 
 type Provider struct {
@@ -40,6 +59,20 @@ type Provider struct {
 	Priority  int32              `json:"priority"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+type Season struct {
+	ID           pgtype.UUID        `json:"id"`
+	MediaID      pgtype.UUID        `json:"media_id"`
+	SeasonNumber int32              `json:"season_number"`
+	Name         string             `json:"name"`
+	Overview     string             `json:"overview"`
+	PosterUrl    string             `json:"poster_url"`
+	AirDate      pgtype.Date        `json:"air_date"`
+	EpisodeCount int32              `json:"episode_count"`
+	ExternalID   string             `json:"external_id"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Source struct {

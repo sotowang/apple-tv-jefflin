@@ -26,6 +26,13 @@ func TestPersistenceIntegration(t *testing.T) {
 	if _, e = p.Exec(ctx, string(schema)); e != nil {
 		t.Fatal(e)
 	}
+	schema, e = os.ReadFile("../../db/migrations/002_media_v2.sql")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = p.Exec(ctx, string(schema)); e != nil {
+		t.Fatal(e)
+	}
 	r := New(p)
 	id := "test-repository-film"
 	m := media.Media{Type: "movie", Title: "First", Provider: "archive", ExternalID: id}

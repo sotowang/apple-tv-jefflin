@@ -9,6 +9,7 @@ import (
 
 type Config struct {
 	Port, PublicBaseURL, DatabaseURL, APIKey, SigningSecret, LogLevel, AppEnv string
+	TMDBAPIToken, TMDBLanguage, TMDBRegion                                    string
 	RequestTimeout, SearchTTL, MediaTTL, SourceTTL                            time.Duration
 }
 
@@ -21,7 +22,7 @@ func env(k, def string) string {
 }
 func duration(k, def string) (time.Duration, error) { return time.ParseDuration(env(k, def)) }
 func Load() (Config, error) {
-	c := Config{Port: env("HTTP_PORT", "8080"), PublicBaseURL: strings.TrimRight(env("PUBLIC_BASE_URL", ""), "/"), DatabaseURL: os.Getenv("DATABASE_URL"), APIKey: os.Getenv("API_KEY"), SigningSecret: os.Getenv("PLAY_URL_SIGNING_SECRET"), LogLevel: env("LOG_LEVEL", "info"), AppEnv: env("APP_ENV", "production")}
+	c := Config{Port: env("HTTP_PORT", "8080"), PublicBaseURL: strings.TrimRight(env("PUBLIC_BASE_URL", ""), "/"), DatabaseURL: os.Getenv("DATABASE_URL"), APIKey: os.Getenv("API_KEY"), SigningSecret: os.Getenv("PLAY_URL_SIGNING_SECRET"), LogLevel: env("LOG_LEVEL", "info"), AppEnv: env("APP_ENV", "production"), TMDBAPIToken: os.Getenv("TMDB_API_TOKEN"), TMDBLanguage: env("TMDB_LANGUAGE", "zh-CN"), TMDBRegion: env("TMDB_REGION", "CN")}
 	var e error
 	c.RequestTimeout, e = duration("REQUEST_TIMEOUT", "10s")
 	if e != nil {

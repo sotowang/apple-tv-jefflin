@@ -15,9 +15,11 @@ import (
 	"online-media/media-source-server/internal/cache"
 	"online-media/media-source-server/internal/config"
 	"online-media/media-source-server/internal/media"
+	"online-media/media-source-server/internal/provider"
 	"online-media/media-source-server/internal/provider/archive"
 	"online-media/media-source-server/internal/repository"
 	"online-media/media-source-server/internal/security"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -26,21 +28,29 @@ import (
 var errDatabase = errors.New("database error")
 
 type API struct {
-	Config       config.Config
-	Repo         *repository.Repository
-	Providers    map[string]media.Provider
-	SearchCache  *cache.TTL[string, []media.Media]
-	MediaCache   *cache.TTL[string, media.Media]
-	SourcesCache *cache.TTL[string, []media.Source]
-	ResolveCache *cache.TTL[string, media.ResolvedStream]
+	Config        config.Config
+	Repo          *repository.Repository
+	Registry      *provider.Registry
+	SearchCache   *cache.TTL[string, []media.Media]
+	MediaCache    *cache.TTL[string, media.Media]
+	SourcesCache  *cache.TTL[string, []media.Source]
+	ResolveCache  *cache.TTL[string, media.ResolvedStream]
+	SeasonsCache  *cache.TTL[string, []media.Season]
+	EpisodesCache *cache.TTL[string, []media.Episode]
 }
 
 func New(cfg config.Config, repo *repository.Repository, providers ...media.Provider) *API {
-	p := map[string]media.Provider{}
-	for _, v := range providers {
-		p[v.Name()] = v
+	r := provider.NewRegistry()
+	for _, p := range providers {
+		r.RegisterLegacy(p)
 	}
-	return &API{cfg, repo, p, cache.New[string, []media.Media](time.Minute), cache.New[string, media.Media](time.Minute), cache.New[string, []media.Source](time.Minute), cache.New[string, media.ResolvedStream](time.Minute)}
+	return NewWithRegistry(cfg, repo, r)
+}
+func NewWithRegistry(cfg config.Config, repo *repository.Repository, r *provider.Registry) *API {
+	if r == nil {
+		r = provider.NewRegistry()
+	}
+	return &API{Config: cfg, Repo: repo, Registry: r, SearchCache: cache.New[string, []media.Media](time.Minute), MediaCache: cache.New[string, media.Media](time.Minute), SourcesCache: cache.New[string, []media.Source](time.Minute), ResolveCache: cache.New[string, media.ResolvedStream](time.Minute), SeasonsCache: cache.New[string, []media.Season](time.Minute), EpisodesCache: cache.New[string, []media.Episode](time.Minute)}
 }
 func failure(c *gin.Context, status int, code, msg string) {
 	c.JSON(status, gin.H{"error": gin.H{"code": code, "message": msg}})
@@ -83,6 +93,9 @@ func (a *API) Router() *gin.Engine {
 	v.GET("/featured", a.featured)
 	v.GET("/media/:id", a.detail)
 	v.GET("/media/:id/sources", a.sources)
+	v.GET("/media/:id/seasons", a.seasons)
+	v.GET("/media/:id/seasons/:seasonNumber/episodes", a.episodes)
+	v.GET("/media/:id/seasons/:seasonNumber/episodes/:episodeNumber/sources", a.episodeSources)
 	if !strings.EqualFold(a.Config.AppEnv, "production") {
 		v.GET("/debug/media/:id", a.debugMedia)
 	}
@@ -111,12 +124,17 @@ func (a *API) providers(c *gin.Context) {
 	}
 	out := []gin.H{}
 	for _, p := range rows {
+		if _, ok := a.Registry.MetadataProviders[p.Name]; !ok {
+			if _, ok = a.Registry.SourceProviders[p.Name]; !ok {
+				continue
+			}
+		}
 		out = append(out, gin.H{"name": p.Name, "type": p.Type, "priority": p.Priority})
 	}
 	c.JSON(200, gin.H{"providers": out})
 }
 func (a *API) search(c *gin.Context) {
-	c.Set("provider", "archive")
+	c.Set("provider", "metadata")
 	q := strings.TrimSpace(c.Query("q"))
 	if len(q) < 2 || len(q) > 120 {
 		failure(c, 400, "INVALID_QUERY", "query must be 2-120 bytes")
@@ -126,13 +144,25 @@ func (a *API) search(c *gin.Context) {
 	if !ok {
 		return
 	}
-	key := fmt.Sprintf("%s:%d:%d", q, page, limit)
+	selected := c.Query("provider")
+	if selected != "" {
+		if _, ok := a.Registry.MetadataProviders[selected]; !ok {
+			failure(c, 400, "INVALID_QUERY", "unknown metadata provider")
+			return
+		}
+	}
+	key := fmt.Sprintf("%s:%s:%d:%d", selected, q, page, limit)
 	if found, ok := a.SearchCache.Get(key); ok {
-		c.JSON(200, gin.H{"items": found})
+		c.JSON(200, gin.H{"items": toMediaRecords(found), "page": page, "limit": limit})
 		return
 	}
 	items := []media.Media{}
-	for name, p := range a.Providers {
+	var firstErr error
+	for _, name := range a.Registry.MetadataNames() {
+		if selected != "" && selected != name {
+			continue
+		}
+		p := a.Registry.MetadataProviders[name]
 		if _, e := a.Repo.Provider(c.Request.Context(), name); e != nil {
 			if errors.Is(e, pgx.ErrNoRows) {
 				continue
@@ -142,13 +172,46 @@ func (a *API) search(c *gin.Context) {
 		}
 		found, e := p.Search(c.Request.Context(), media.SearchQuery{Query: q, Page: page, Limit: limit})
 		if e != nil {
-			a.providerFailure(c, e)
-			return
+			if firstErr == nil {
+				firstErr = e
+			}
+			slog.Warn("metadata search failed", "provider", name, "error", e)
+			continue
 		}
 		items = append(items, found...)
 	}
+	if len(items) == 0 && firstErr != nil {
+		a.providerFailure(c, firstErr)
+		return
+	}
+	// TMDB metadata is the primary search surface; Archive results remain available.
+	sort.SliceStable(items, func(i, j int) bool { return searchPriority(q, items[i]) < searchPriority(q, items[j]) })
+	if len(items) > limit {
+		items = items[:limit]
+	}
 	a.SearchCache.Set(key, items, a.Config.SearchTTL)
-	c.JSON(200, gin.H{"items": items})
+	c.JSON(200, gin.H{"items": toMediaRecords(items), "page": page, "limit": limit})
+}
+func searchPriority(q string, m media.Media) int {
+	q = strings.ToLower(strings.TrimSpace(q))
+	t := strings.ToLower(strings.TrimSpace(m.Title))
+	o := strings.ToLower(strings.TrimSpace(m.OriginalTitle))
+	if t == q {
+		return 0
+	}
+	if o == q {
+		return 1
+	}
+	if strings.HasPrefix(t, q) {
+		return 2
+	}
+	if strings.Contains(t, q) || strings.HasPrefix(o, q) {
+		return 3
+	}
+	if strings.Contains(o, q) {
+		return 4
+	}
+	return 5
 }
 func (a *API) featured(c *gin.Context) {
 	c.Set("provider", "archive")
@@ -158,15 +221,11 @@ func (a *API) featured(c *gin.Context) {
 	}
 	key := fmt.Sprintf("featured:%d:%d", page, limit)
 	if found, ok := a.SearchCache.Get(key); ok {
-		c.JSON(200, gin.H{"items": found})
+		c.JSON(200, gin.H{"items": toMediaRecords(found)})
 		return
 	}
 	items := []media.Media{}
-	for name, provider := range a.Providers {
-		browser, ok := provider.(media.BrowseProvider)
-		if !ok {
-			continue
-		}
+	for name, browser := range a.Registry.BrowseProviders {
 		if _, err := a.Repo.Provider(c.Request.Context(), name); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				continue
@@ -182,7 +241,7 @@ func (a *API) featured(c *gin.Context) {
 		items = append(items, found...)
 	}
 	a.SearchCache.Set(key, items, a.Config.SearchTTL)
-	c.JSON(200, gin.H{"items": items})
+	c.JSON(200, gin.H{"items": toMediaRecords(items)})
 }
 func splitID(id string) (string, string, bool) {
 	s := strings.SplitN(id, ":", 2)
@@ -199,7 +258,7 @@ func (a *API) getMedia(ctx context.Context, id string) (media.Media, error) {
 	if !ok {
 		return media.Media{}, archive.ErrNotFound
 	}
-	p, ok := a.Providers[provider]
+	p, ok := a.Registry.MetadataProviders[provider]
 	if !ok {
 		return media.Media{}, archive.ErrNotFound
 	}
@@ -235,7 +294,7 @@ func isTimeout(e error) bool {
 func (a *API) providerFailure(c *gin.Context, e error) {
 	if errors.Is(e, errDatabase) {
 		failure(c, 500, "DATABASE_ERROR", "database error")
-	} else if errors.Is(e, archive.ErrNotFound) {
+	} else if errors.Is(e, archive.ErrNotFound) || errors.Is(e, provider.ErrNotFound) {
 		failure(c, 404, "MEDIA_NOT_FOUND", "media not found")
 	} else if errors.Is(e, archive.ErrNoPlayable) {
 		failure(c, 404, "NO_PLAYABLE_SOURCE", "no playable source")
@@ -255,7 +314,7 @@ func (a *API) detail(c *gin.Context) {
 		a.providerFailure(c, e)
 		return
 	}
-	c.JSON(200, m)
+	c.JSON(200, toMediaRecord(m))
 }
 func (a *API) sources(c *gin.Context) {
 	c.Set("mediaId", c.Param("id"))
@@ -272,7 +331,7 @@ func (a *API) sources(c *gin.Context) {
 		a.providerFailure(c, e)
 		return
 	}
-	c.JSON(200, gin.H{"sources": list})
+	c.JSON(200, gin.H{"sources": list, "items": list})
 }
 func (a *API) getSources(ctx context.Context, m media.Media) ([]media.Source, error) {
 	if cached, ok := a.SourcesCache.Get(m.ID); ok {
@@ -283,13 +342,15 @@ func (a *API) getSources(ctx context.Context, m media.Media) ([]media.Source, er
 		return nil, fmt.Errorf("%w: %v", errDatabase, err)
 	}
 	if len(list) == 0 {
-		list, err = a.Providers[m.Provider].GetSources(ctx, m)
+		list, err = a.Registry.ResolveMedia(ctx, m)
 		if err != nil {
 			return nil, err
 		}
-		list, err = a.Repo.UpsertSources(ctx, m, list)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %v", errDatabase, err)
+		if len(list) > 0 {
+			list, err = a.Repo.UpsertSources(ctx, m, list)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %v", errDatabase, err)
+			}
 		}
 	}
 	a.SourcesCache.Set(m.ID, list, a.Config.SourceTTL)
@@ -320,7 +381,7 @@ func (a *API) debugMedia(c *gin.Context) {
 		}
 	}
 	if selected != nil {
-		resolved, resolveErr := a.Providers[selected.Provider].Resolve(c.Request.Context(), *selected)
+		resolved, resolveErr := a.Registry.SourceProviders[selected.Provider].ResolveStream(c.Request.Context(), *selected)
 		if resolveErr != nil {
 			a.providerFailure(c, resolveErr)
 			return
@@ -338,7 +399,7 @@ func (a *API) debugMedia(c *gin.Context) {
 		resolvedInfo["proxyRequired"] = proxyRequired
 		c.Set("sourceId", selected.ID)
 	}
-	c.JSON(200, gin.H{"media": m, "sources": sources, "selectedSource": selected, "resolved": resolvedInfo})
+	c.JSON(200, gin.H{"media": toMediaRecord(m), "sources": sources, "selectedSource": selected, "resolved": resolvedInfo})
 }
 func (a *API) library(c *gin.Context) {
 	page, limit, ok := parsePage(c)
@@ -350,7 +411,7 @@ func (a *API) library(c *gin.Context) {
 		failure(c, 500, "DATABASE_ERROR", "database error")
 		return
 	}
-	c.JSON(200, gin.H{"items": items})
+	c.JSON(200, gin.H{"items": toMediaRecords(items)})
 }
 func (a *API) addLibrary(c *gin.Context) {
 	m, e := a.getMedia(c.Request.Context(), c.Param("mediaId"))
@@ -424,12 +485,12 @@ func (a *API) play(c *gin.Context) {
 	if v, ok := a.ResolveCache.Get(id); ok {
 		resolved = v
 	} else {
-		p, ok := a.Providers[s.Provider]
+		p, ok := a.Registry.SourceProviders[s.Provider]
 		if !ok {
 			failure(c, 502, "PROVIDER_ERROR", "provider unavailable")
 			return
 		}
-		v, e := p.Resolve(c.Request.Context(), s)
+		v, e := p.ResolveStream(c.Request.Context(), s)
 		if e != nil {
 			a.providerFailure(c, e)
 			return

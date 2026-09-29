@@ -325,3 +325,22 @@ func (p *Provider) Resolve(_ context.Context, s media.Source) (*media.ResolvedSt
 	}
 	return &media.ResolvedStream{URL: p.base + "/download/" + url.PathEscape(s.ExternalID) + "/" + url.PathEscape(s.FileName), ProxyRequired: false}, nil
 }
+
+func (p *Provider) GetSeasons(context.Context, string) ([]media.Season, error) {
+	return []media.Season{}, nil
+}
+func (p *Provider) GetEpisodes(context.Context, string, int) ([]media.Episode, error) {
+	return []media.Episode{}, nil
+}
+func (p *Provider) ResolveMedia(ctx context.Context, m media.Media) ([]media.Source, error) {
+	if m.Provider != p.Name() {
+		return []media.Source{}, nil
+	}
+	return p.GetSources(ctx, m)
+}
+func (p *Provider) ResolveEpisode(context.Context, media.Media, media.Episode) ([]media.Source, error) {
+	return []media.Source{}, nil
+}
+func (p *Provider) ResolveStream(ctx context.Context, s media.Source) (*media.ResolvedStream, error) {
+	return p.Resolve(ctx, s)
+}

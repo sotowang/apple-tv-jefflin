@@ -20,8 +20,44 @@ func (q *Queries) AddLibraryItem(ctx context.Context, mediaID pgtype.UUID) error
 	return err
 }
 
+const getEpisodesBySeasonID = `-- name: GetEpisodesBySeasonID :many
+SELECT id, season_id, episode_number, name, overview, air_date, runtime_minutes, still_url, external_id, created_at, updated_at FROM episodes WHERE season_id=$1 ORDER BY episode_number
+`
+
+func (q *Queries) GetEpisodesBySeasonID(ctx context.Context, seasonID pgtype.UUID) ([]Episode, error) {
+	rows, err := q.db.Query(ctx, getEpisodesBySeasonID, seasonID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Episode
+	for rows.Next() {
+		var i Episode
+		if err := rows.Scan(
+			&i.ID,
+			&i.SeasonID,
+			&i.EpisodeNumber,
+			&i.Name,
+			&i.Overview,
+			&i.AirDate,
+			&i.RuntimeMinutes,
+			&i.StillUrl,
+			&i.ExternalID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getMediaByExternalID = `-- name: GetMediaByExternalID :one
-SELECT m.id, m.type, m.title, m.original_title, m.year, m.overview, m.poster_url, m.backdrop_url, m.provider_id, m.external_id, m.license_url, m.rights, m.created_at, m.updated_at FROM media m JOIN providers p ON p.id=m.provider_id WHERE p.name=$1 AND m.external_id=$2
+SELECT m.id, m.type, m.title, m.original_title, m.year, m.overview, m.poster_url, m.backdrop_url, m.provider_id, m.external_id, m.license_url, m.rights, m.created_at, m.updated_at, m.release_date, m.original_language, m.tmdb_id, m.season_count, m.episode_count FROM media m JOIN providers p ON p.id=m.provider_id WHERE p.name=$1 AND m.external_id=$2
 `
 
 type GetMediaByExternalIDParams struct {
@@ -47,12 +83,17 @@ func (q *Queries) GetMediaByExternalID(ctx context.Context, arg GetMediaByExtern
 		&i.Rights,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ReleaseDate,
+		&i.OriginalLanguage,
+		&i.TmdbID,
+		&i.SeasonCount,
+		&i.EpisodeCount,
 	)
 	return i, err
 }
 
 const getMediaByID = `-- name: GetMediaByID :one
-SELECT id, type, title, original_title, year, overview, poster_url, backdrop_url, provider_id, external_id, license_url, rights, created_at, updated_at FROM media WHERE id = $1
+SELECT id, type, title, original_title, year, overview, poster_url, backdrop_url, provider_id, external_id, license_url, rights, created_at, updated_at, release_date, original_language, tmdb_id, season_count, episode_count FROM media WHERE id = $1
 `
 
 func (q *Queries) GetMediaByID(ctx context.Context, id pgtype.UUID) (Medium, error) {
@@ -73,6 +114,11 @@ func (q *Queries) GetMediaByID(ctx context.Context, id pgtype.UUID) (Medium, err
 		&i.Rights,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ReleaseDate,
+		&i.OriginalLanguage,
+		&i.TmdbID,
+		&i.SeasonCount,
+		&i.EpisodeCount,
 	)
 	return i, err
 }
@@ -113,6 +159,70 @@ func (q *Queries) GetProviderByName(ctx context.Context, name string) (Provider,
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const getSeasonByMediaAndNumber = `-- name: GetSeasonByMediaAndNumber :one
+SELECT id, media_id, season_number, name, overview, poster_url, air_date, episode_count, external_id, created_at, updated_at FROM seasons WHERE media_id=$1 AND season_number=$2
+`
+
+type GetSeasonByMediaAndNumberParams struct {
+	MediaID      pgtype.UUID `json:"media_id"`
+	SeasonNumber int32       `json:"season_number"`
+}
+
+func (q *Queries) GetSeasonByMediaAndNumber(ctx context.Context, arg GetSeasonByMediaAndNumberParams) (Season, error) {
+	row := q.db.QueryRow(ctx, getSeasonByMediaAndNumber, arg.MediaID, arg.SeasonNumber)
+	var i Season
+	err := row.Scan(
+		&i.ID,
+		&i.MediaID,
+		&i.SeasonNumber,
+		&i.Name,
+		&i.Overview,
+		&i.PosterUrl,
+		&i.AirDate,
+		&i.EpisodeCount,
+		&i.ExternalID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getSeasonsByMediaID = `-- name: GetSeasonsByMediaID :many
+SELECT id, media_id, season_number, name, overview, poster_url, air_date, episode_count, external_id, created_at, updated_at FROM seasons WHERE media_id=$1 ORDER BY season_number
+`
+
+func (q *Queries) GetSeasonsByMediaID(ctx context.Context, mediaID pgtype.UUID) ([]Season, error) {
+	rows, err := q.db.Query(ctx, getSeasonsByMediaID, mediaID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Season
+	for rows.Next() {
+		var i Season
+		if err := rows.Scan(
+			&i.ID,
+			&i.MediaID,
+			&i.SeasonNumber,
+			&i.Name,
+			&i.Overview,
+			&i.PosterUrl,
+			&i.AirDate,
+			&i.EpisodeCount,
+			&i.ExternalID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getSourceByID = `-- name: GetSourceByID :one
@@ -187,7 +297,7 @@ func (q *Queries) GetSourcesByMediaID(ctx context.Context, mediaID pgtype.UUID) 
 }
 
 const listLibraryItems = `-- name: ListLibraryItems :many
-SELECT m.id, m.type, m.title, m.original_title, m.year, m.overview, m.poster_url, m.backdrop_url, m.provider_id, m.external_id, m.license_url, m.rights, m.created_at, m.updated_at FROM library_items li JOIN media m ON m.id=li.media_id ORDER BY li.created_at DESC LIMIT $1 OFFSET $2
+SELECT m.id, m.type, m.title, m.original_title, m.year, m.overview, m.poster_url, m.backdrop_url, m.provider_id, m.external_id, m.license_url, m.rights, m.created_at, m.updated_at, m.release_date, m.original_language, m.tmdb_id, m.season_count, m.episode_count FROM library_items li JOIN media m ON m.id=li.media_id ORDER BY li.created_at DESC LIMIT $1 OFFSET $2
 `
 
 type ListLibraryItemsParams struct {
@@ -219,6 +329,11 @@ func (q *Queries) ListLibraryItems(ctx context.Context, arg ListLibraryItemsPara
 			&i.Rights,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ReleaseDate,
+			&i.OriginalLanguage,
+			&i.TmdbID,
+			&i.SeasonCount,
+			&i.EpisodeCount,
 		); err != nil {
 			return nil, err
 		}
@@ -271,25 +386,76 @@ func (q *Queries) RemoveLibraryItem(ctx context.Context, mediaID pgtype.UUID) er
 	return err
 }
 
+const upsertEpisode = `-- name: UpsertEpisode :one
+INSERT INTO episodes(season_id,episode_number,name,overview,air_date,runtime_minutes,still_url,external_id)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+ON CONFLICT(season_id,episode_number) DO UPDATE SET name=excluded.name,overview=excluded.overview,air_date=excluded.air_date,runtime_minutes=excluded.runtime_minutes,still_url=excluded.still_url,external_id=excluded.external_id,updated_at=now()
+RETURNING id, season_id, episode_number, name, overview, air_date, runtime_minutes, still_url, external_id, created_at, updated_at
+`
+
+type UpsertEpisodeParams struct {
+	SeasonID       pgtype.UUID `json:"season_id"`
+	EpisodeNumber  int32       `json:"episode_number"`
+	Name           string      `json:"name"`
+	Overview       string      `json:"overview"`
+	AirDate        pgtype.Date `json:"air_date"`
+	RuntimeMinutes int32       `json:"runtime_minutes"`
+	StillUrl       string      `json:"still_url"`
+	ExternalID     string      `json:"external_id"`
+}
+
+func (q *Queries) UpsertEpisode(ctx context.Context, arg UpsertEpisodeParams) (Episode, error) {
+	row := q.db.QueryRow(ctx, upsertEpisode,
+		arg.SeasonID,
+		arg.EpisodeNumber,
+		arg.Name,
+		arg.Overview,
+		arg.AirDate,
+		arg.RuntimeMinutes,
+		arg.StillUrl,
+		arg.ExternalID,
+	)
+	var i Episode
+	err := row.Scan(
+		&i.ID,
+		&i.SeasonID,
+		&i.EpisodeNumber,
+		&i.Name,
+		&i.Overview,
+		&i.AirDate,
+		&i.RuntimeMinutes,
+		&i.StillUrl,
+		&i.ExternalID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const upsertMedia = `-- name: UpsertMedia :one
-INSERT INTO media(type,title,original_title,year,overview,poster_url,backdrop_url,provider_id,external_id,license_url,rights)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-ON CONFLICT(provider_id,external_id) DO UPDATE SET type=excluded.type,title=excluded.title,original_title=excluded.original_title,year=excluded.year,overview=excluded.overview,poster_url=excluded.poster_url,backdrop_url=excluded.backdrop_url,license_url=excluded.license_url,rights=excluded.rights,updated_at=now()
-RETURNING id, type, title, original_title, year, overview, poster_url, backdrop_url, provider_id, external_id, license_url, rights, created_at, updated_at
+INSERT INTO media(type,title,original_title,year,overview,poster_url,backdrop_url,provider_id,external_id,license_url,rights,release_date,original_language,tmdb_id,season_count,episode_count)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+ON CONFLICT(provider_id,external_id) DO UPDATE SET type=excluded.type,title=excluded.title,original_title=excluded.original_title,year=excluded.year,overview=excluded.overview,poster_url=excluded.poster_url,backdrop_url=excluded.backdrop_url,license_url=excluded.license_url,rights=excluded.rights,release_date=excluded.release_date,original_language=excluded.original_language,tmdb_id=excluded.tmdb_id,season_count=excluded.season_count,episode_count=excluded.episode_count,updated_at=now()
+RETURNING id, type, title, original_title, year, overview, poster_url, backdrop_url, provider_id, external_id, license_url, rights, created_at, updated_at, release_date, original_language, tmdb_id, season_count, episode_count
 `
 
 type UpsertMediaParams struct {
-	Type          string      `json:"type"`
-	Title         string      `json:"title"`
-	OriginalTitle string      `json:"original_title"`
-	Year          pgtype.Int4 `json:"year"`
-	Overview      string      `json:"overview"`
-	PosterUrl     string      `json:"poster_url"`
-	BackdropUrl   string      `json:"backdrop_url"`
-	ProviderID    pgtype.UUID `json:"provider_id"`
-	ExternalID    string      `json:"external_id"`
-	LicenseUrl    string      `json:"license_url"`
-	Rights        string      `json:"rights"`
+	Type             string      `json:"type"`
+	Title            string      `json:"title"`
+	OriginalTitle    string      `json:"original_title"`
+	Year             pgtype.Int4 `json:"year"`
+	Overview         string      `json:"overview"`
+	PosterUrl        string      `json:"poster_url"`
+	BackdropUrl      string      `json:"backdrop_url"`
+	ProviderID       pgtype.UUID `json:"provider_id"`
+	ExternalID       string      `json:"external_id"`
+	LicenseUrl       string      `json:"license_url"`
+	Rights           string      `json:"rights"`
+	ReleaseDate      pgtype.Date `json:"release_date"`
+	OriginalLanguage string      `json:"original_language"`
+	TmdbID           pgtype.Int4 `json:"tmdb_id"`
+	SeasonCount      int32       `json:"season_count"`
+	EpisodeCount     int32       `json:"episode_count"`
 }
 
 func (q *Queries) UpsertMedia(ctx context.Context, arg UpsertMediaParams) (Medium, error) {
@@ -305,6 +471,11 @@ func (q *Queries) UpsertMedia(ctx context.Context, arg UpsertMediaParams) (Mediu
 		arg.ExternalID,
 		arg.LicenseUrl,
 		arg.Rights,
+		arg.ReleaseDate,
+		arg.OriginalLanguage,
+		arg.TmdbID,
+		arg.SeasonCount,
+		arg.EpisodeCount,
 	)
 	var i Medium
 	err := row.Scan(
@@ -320,6 +491,57 @@ func (q *Queries) UpsertMedia(ctx context.Context, arg UpsertMediaParams) (Mediu
 		&i.ExternalID,
 		&i.LicenseUrl,
 		&i.Rights,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ReleaseDate,
+		&i.OriginalLanguage,
+		&i.TmdbID,
+		&i.SeasonCount,
+		&i.EpisodeCount,
+	)
+	return i, err
+}
+
+const upsertSeason = `-- name: UpsertSeason :one
+INSERT INTO seasons(media_id,season_number,name,overview,poster_url,air_date,episode_count,external_id)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+ON CONFLICT(media_id,season_number) DO UPDATE SET name=excluded.name,overview=excluded.overview,poster_url=excluded.poster_url,air_date=excluded.air_date,episode_count=excluded.episode_count,external_id=excluded.external_id,updated_at=now()
+RETURNING id, media_id, season_number, name, overview, poster_url, air_date, episode_count, external_id, created_at, updated_at
+`
+
+type UpsertSeasonParams struct {
+	MediaID      pgtype.UUID `json:"media_id"`
+	SeasonNumber int32       `json:"season_number"`
+	Name         string      `json:"name"`
+	Overview     string      `json:"overview"`
+	PosterUrl    string      `json:"poster_url"`
+	AirDate      pgtype.Date `json:"air_date"`
+	EpisodeCount int32       `json:"episode_count"`
+	ExternalID   string      `json:"external_id"`
+}
+
+func (q *Queries) UpsertSeason(ctx context.Context, arg UpsertSeasonParams) (Season, error) {
+	row := q.db.QueryRow(ctx, upsertSeason,
+		arg.MediaID,
+		arg.SeasonNumber,
+		arg.Name,
+		arg.Overview,
+		arg.PosterUrl,
+		arg.AirDate,
+		arg.EpisodeCount,
+		arg.ExternalID,
+	)
+	var i Season
+	err := row.Scan(
+		&i.ID,
+		&i.MediaID,
+		&i.SeasonNumber,
+		&i.Name,
+		&i.Overview,
+		&i.PosterUrl,
+		&i.AirDate,
+		&i.EpisodeCount,
+		&i.ExternalID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

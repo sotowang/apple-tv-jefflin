@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"online-media/media-source-server/internal/config"
 	"online-media/media-source-server/internal/media"
+	"online-media/media-source-server/internal/provider"
 	"online-media/media-source-server/internal/repository"
 	"os"
 	"strings"
@@ -16,6 +17,21 @@ import (
 )
 
 type fakeProvider struct{}
+type fakeTMDB struct{}
+
+func (fakeTMDB) Name() string { return "tmdb" }
+func (fakeTMDB) Search(context.Context, media.SearchQuery) ([]media.Media, error) {
+	return []media.Media{{ID: "tmdb:tv:987654", Provider: "tmdb", ExternalID: "tv:987654", Type: "tv", Title: "凡人修仙传"}}, nil
+}
+func (fakeTMDB) GetMedia(context.Context, string) (*media.Media, error) {
+	return &media.Media{ID: "tmdb:tv:987654", Provider: "tmdb", ExternalID: "tv:987654", Type: "tv", Title: "凡人修仙传", Year: 2025, ReleaseDate: "2025-01-01", SeasonCount: 1, EpisodeCount: 1, TMDBID: 987654}, nil
+}
+func (fakeTMDB) GetSeasons(context.Context, string) ([]media.Season, error) {
+	return []media.Season{{SeasonNumber: 1, Name: "第 1 季", EpisodeCount: 1, ExternalID: "123"}}, nil
+}
+func (fakeTMDB) GetEpisodes(context.Context, string, int) ([]media.Episode, error) {
+	return []media.Episode{{EpisodeNumber: 1, Name: "第 1 集", ExternalID: "456"}}, nil
+}
 
 func TestDebugRouteAbsentInProduction(t *testing.T) {
 	const key = "test-api-key"
@@ -57,6 +73,13 @@ func TestAPIIntegration(t *testing.T) {
 	}
 	defer pool.Close()
 	sql, e := os.ReadFile("../../db/migrations/001_initial.sql")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = pool.Exec(ctx, string(sql)); e != nil {
+		t.Fatal(e)
+	}
+	sql, e = os.ReadFile("../../db/migrations/002_media_v2.sql")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -140,4 +163,29 @@ func TestAPIIntegration(t *testing.T) {
 	if w := call("POST", "/api/v1/sources/00000000-0000-0000-0000-000000000001/play-url", key); w.Code != 404 || !strings.Contains(w.Body.String(), "SOURCE_NOT_FOUND") {
 		t.Fatalf("source not found: %d %s", w.Code, w.Body.String())
 	}
+	registry := provider.NewRegistry()
+	registry.RegisterLegacy(fakeProvider{})
+	registry.RegisterMetadata(fakeTMDB{})
+	v2 := NewWithRegistry(a.Config, repository.New(pool), registry).Router()
+	v2call := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Header.Set("X-API-Key", key)
+		w := httptest.NewRecorder()
+		v2.ServeHTTP(w, req)
+		return w
+	}
+	for _, tc := range []struct{ path, want string }{
+		{"/api/v1/search?q=凡人修仙传&provider=tmdb", `"id":"tmdb:tv:987654"`},
+		{"/api/v1/media/tmdb:tv:987654", `"seasonCount":1`},
+		{"/api/v1/media/tmdb:tv:987654/seasons", `"seasonNumber":1`},
+		{"/api/v1/media/tmdb:tv:987654/seasons/1/episodes", `"episodeNumber":1`},
+		{"/api/v1/media/tmdb:tv:987654/sources", `"items":[]`},
+		{"/api/v1/media/tmdb:tv:987654/seasons/1/episodes/1/sources", `"items":[]`},
+	} {
+		w := v2call(tc.path)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), tc.want) {
+			t.Fatalf("V2 %s: %d %s", tc.path, w.Code, w.Body.String())
+		}
+	}
+	_, _ = pool.Exec(ctx, "DELETE FROM media WHERE external_id=$1", "tv:987654")
 }

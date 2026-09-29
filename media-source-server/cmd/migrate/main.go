@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"log/slog"
+	"online-media/media-source-server/internal/database"
 	"os"
 	"time"
 )
@@ -22,13 +23,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer p.Close()
-	b, e := os.ReadFile("/app/migrations/001_initial.sql")
-	if e != nil {
-		slog.Error("migration file", "error", e)
-		os.Exit(1)
-	}
-	_, e = p.Exec(ctx, string(b))
-	if e != nil {
+	if e = database.Migrate(ctx, p); e != nil {
 		slog.Error("migration", "error", e)
 		os.Exit(1)
 	}

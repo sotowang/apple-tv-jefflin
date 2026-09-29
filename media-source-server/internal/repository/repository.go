@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"online-media/media-source-server/internal/database/dbgen"
 	"online-media/media-source-server/internal/media"
+	"time"
 )
 
 type Repository struct {
@@ -30,7 +31,24 @@ func convertMedia(m dbgen.Medium, provider string) media.Media {
 	if m.Year.Valid {
 		y = int(m.Year.Int32)
 	}
-	return media.Media{ID: provider + ":" + m.ExternalID, Type: m.Type, Title: m.Title, OriginalTitle: m.OriginalTitle, Year: y, Overview: m.Overview, PosterURL: m.PosterUrl, BackdropURL: m.BackdropUrl, Provider: provider, ExternalID: m.ExternalID, LicenseURL: m.LicenseUrl, Rights: m.Rights, RightsStatus: media.ClassifyRights(m.LicenseUrl, m.Rights)}
+	tmdbID := 0
+	if m.TmdbID.Valid {
+		tmdbID = int(m.TmdbID.Int32)
+	}
+	return media.Media{ID: provider + ":" + m.ExternalID, Type: m.Type, Title: m.Title, OriginalTitle: m.OriginalTitle, Year: y, Overview: m.Overview, PosterURL: m.PosterUrl, BackdropURL: m.BackdropUrl, Provider: provider, ExternalID: m.ExternalID, LicenseURL: m.LicenseUrl, Rights: m.Rights, RightsStatus: media.ClassifyRights(m.LicenseUrl, m.Rights), ReleaseDate: dateString(m.ReleaseDate), OriginalLanguage: m.OriginalLanguage, TMDBID: tmdbID, SeasonCount: int(m.SeasonCount), EpisodeCount: int(m.EpisodeCount)}
+}
+func dateString(d pgtype.Date) string {
+	if !d.Valid {
+		return ""
+	}
+	return d.Time.Format("2006-01-02")
+}
+func dateValue(s string) pgtype.Date {
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return pgtype.Date{}
+	}
+	return pgtype.Date{Time: t, Valid: true}
 }
 func convertSource(s dbgen.Source, provider string) media.Source {
 	b := int64(0)
@@ -58,7 +76,11 @@ func (r *Repository) UpsertMedia(ctx context.Context, m media.Media) (media.Medi
 	if m.Year > 0 {
 		yr = pgtype.Int4{Int32: int32(m.Year), Valid: true}
 	}
-	row, e := r.Q.UpsertMedia(ctx, dbgen.UpsertMediaParams{Type: m.Type, Title: m.Title, OriginalTitle: m.OriginalTitle, Year: yr, Overview: m.Overview, PosterUrl: m.PosterURL, BackdropUrl: m.BackdropURL, ProviderID: p.ID, ExternalID: m.ExternalID, LicenseUrl: m.LicenseURL, Rights: m.Rights})
+	var tmdbID pgtype.Int4
+	if m.TMDBID > 0 {
+		tmdbID = pgtype.Int4{Int32: int32(m.TMDBID), Valid: true}
+	}
+	row, e := r.Q.UpsertMedia(ctx, dbgen.UpsertMediaParams{Type: m.Type, Title: m.Title, OriginalTitle: m.OriginalTitle, Year: yr, Overview: m.Overview, PosterUrl: m.PosterURL, BackdropUrl: m.BackdropURL, ProviderID: p.ID, ExternalID: m.ExternalID, LicenseUrl: m.LicenseURL, Rights: m.Rights, ReleaseDate: dateValue(m.ReleaseDate), OriginalLanguage: m.OriginalLanguage, TmdbID: tmdbID, SeasonCount: int32(m.SeasonCount), EpisodeCount: int32(m.EpisodeCount)})
 	return convertMedia(row, m.Provider), e
 }
 func (r *Repository) MediaUUID(ctx context.Context, provider, id string) (pgtype.UUID, error) {
@@ -76,21 +98,25 @@ func (r *Repository) Sources(ctx context.Context, provider, id string) ([]media.
 	}
 	out := make([]media.Source, 0, len(rows))
 	for _, s := range rows {
-		out = append(out, convertSource(s, provider))
+		p, err := r.Q.GetProviderByID(ctx, s.ProviderID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, convertSource(s, p.Name))
 	}
 	return out, nil
 }
 func (r *Repository) UpsertSources(ctx context.Context, m media.Media, sources []media.Source) ([]media.Source, error) {
-	p, e := r.Provider(ctx, m.Provider)
-	if e != nil {
-		return nil, e
-	}
 	mid, e := r.MediaUUID(ctx, m.Provider, m.ExternalID)
 	if e != nil {
 		return nil, e
 	}
 	out := make([]media.Source, 0, len(sources))
 	for _, s := range sources {
+		p, e := r.Provider(ctx, s.Provider)
+		if e != nil {
+			return nil, e
+		}
 		var bitrate pgtype.Int8
 		if s.Bitrate > 0 {
 			bitrate = pgtype.Int8{Int64: s.Bitrate, Valid: true}
@@ -100,6 +126,83 @@ func (r *Repository) UpsertSources(ctx context.Context, m media.Media, sources [
 			return nil, e
 		}
 		out = append(out, convertSource(row, m.Provider))
+	}
+	return out, nil
+}
+
+func convertSeason(s dbgen.Season, mediaID string) media.Season {
+	return media.Season{ID: mediaID + ":season:" + fmt.Sprint(s.SeasonNumber), MediaID: mediaID, SeasonNumber: int(s.SeasonNumber), Name: s.Name, Overview: s.Overview, PosterURL: s.PosterUrl, AirDate: dateString(s.AirDate), EpisodeCount: int(s.EpisodeCount), ExternalID: s.ExternalID}
+}
+func convertEpisode(e dbgen.Episode, seasonID string) media.Episode {
+	return media.Episode{ID: seasonID + ":episode:" + fmt.Sprint(e.EpisodeNumber), SeasonID: seasonID, EpisodeNumber: int(e.EpisodeNumber), Name: e.Name, Overview: e.Overview, AirDate: dateString(e.AirDate), RuntimeMinutes: int(e.RuntimeMinutes), StillURL: e.StillUrl, ExternalID: e.ExternalID}
+}
+func (r *Repository) UpsertSeasons(ctx context.Context, m media.Media, seasons []media.Season) ([]media.Season, error) {
+	mid, err := r.MediaUUID(ctx, m.Provider, m.ExternalID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]media.Season, 0, len(seasons))
+	for _, s := range seasons {
+		row, err := r.Q.UpsertSeason(ctx, dbgen.UpsertSeasonParams{MediaID: mid, SeasonNumber: int32(s.SeasonNumber), Name: s.Name, Overview: s.Overview, PosterUrl: s.PosterURL, AirDate: dateValue(s.AirDate), EpisodeCount: int32(s.EpisodeCount), ExternalID: s.ExternalID})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, convertSeason(row, m.ID))
+	}
+	return out, nil
+}
+func (r *Repository) Seasons(ctx context.Context, m media.Media) ([]media.Season, error) {
+	mid, err := r.MediaUUID(ctx, m.Provider, m.ExternalID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.Q.GetSeasonsByMediaID(ctx, mid)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]media.Season, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, convertSeason(row, m.ID))
+	}
+	return out, nil
+}
+func (r *Repository) UpsertEpisodes(ctx context.Context, m media.Media, number int, episodes []media.Episode) ([]media.Episode, error) {
+	mid, err := r.MediaUUID(ctx, m.Provider, m.ExternalID)
+	if err != nil {
+		return nil, err
+	}
+	season, err := r.Q.GetSeasonByMediaAndNumber(ctx, dbgen.GetSeasonByMediaAndNumberParams{MediaID: mid, SeasonNumber: int32(number)})
+	if err != nil {
+		return nil, err
+	}
+	seasonID := m.ID + ":season:" + fmt.Sprint(number)
+	out := make([]media.Episode, 0, len(episodes))
+	for _, e := range episodes {
+		row, err := r.Q.UpsertEpisode(ctx, dbgen.UpsertEpisodeParams{SeasonID: season.ID, EpisodeNumber: int32(e.EpisodeNumber), Name: e.Name, Overview: e.Overview, AirDate: dateValue(e.AirDate), RuntimeMinutes: int32(e.RuntimeMinutes), StillUrl: e.StillURL, ExternalID: e.ExternalID})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, convertEpisode(row, seasonID))
+	}
+	return out, nil
+}
+func (r *Repository) Episodes(ctx context.Context, m media.Media, number int) ([]media.Episode, error) {
+	mid, err := r.MediaUUID(ctx, m.Provider, m.ExternalID)
+	if err != nil {
+		return nil, err
+	}
+	season, err := r.Q.GetSeasonByMediaAndNumber(ctx, dbgen.GetSeasonByMediaAndNumberParams{MediaID: mid, SeasonNumber: int32(number)})
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.Q.GetEpisodesBySeasonID(ctx, season.ID)
+	if err != nil {
+		return nil, err
+	}
+	seasonID := m.ID + ":season:" + fmt.Sprint(number)
+	out := make([]media.Episode, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, convertEpisode(row, seasonID))
 	}
 	return out, nil
 }

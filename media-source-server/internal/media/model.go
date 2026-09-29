@@ -3,19 +3,55 @@ package media
 import "context"
 
 type Media struct {
-	ID            string       `json:"id"`
-	Type          string       `json:"type"`
-	Title         string       `json:"title"`
-	OriginalTitle string       `json:"originalTitle,omitempty"`
-	Year          int          `json:"year,omitempty"`
-	Overview      string       `json:"overview,omitempty"`
-	PosterURL     string       `json:"posterUrl,omitempty"`
-	BackdropURL   string       `json:"backdropUrl,omitempty"`
-	Provider      string       `json:"provider"`
-	ExternalID    string       `json:"externalId"`
-	LicenseURL    string       `json:"licenseUrl,omitempty"`
-	Rights        string       `json:"rights,omitempty"`
-	RightsStatus  RightsStatus `json:"rightsStatus,omitempty"`
+	ID               string       `json:"id"`
+	Type             string       `json:"type"`
+	Title            string       `json:"title"`
+	OriginalTitle    string       `json:"originalTitle,omitempty"`
+	Year             int          `json:"year,omitempty"`
+	Overview         string       `json:"overview,omitempty"`
+	PosterURL        string       `json:"posterUrl,omitempty"`
+	BackdropURL      string       `json:"backdropUrl,omitempty"`
+	Provider         string       `json:"provider"`
+	ExternalID       string       `json:"externalId"`
+	ReleaseDate      string       `json:"releaseDate,omitempty"`
+	OriginalLanguage string       `json:"originalLanguage,omitempty"`
+	TMDBID           int          `json:"tmdbId,omitempty"`
+	SeasonCount      int          `json:"seasonCount,omitempty"`
+	EpisodeCount     int          `json:"episodeCount,omitempty"`
+	LicenseURL       string       `json:"licenseUrl,omitempty"`
+	Rights           string       `json:"rights,omitempty"`
+	RightsStatus     RightsStatus `json:"rightsStatus,omitempty"`
+}
+
+type MediaType string
+
+const (
+	MediaTypeMovie MediaType = "movie"
+	MediaTypeTV    MediaType = "tv"
+)
+
+type Season struct {
+	ID           string `json:"id"`
+	MediaID      string `json:"mediaId"`
+	SeasonNumber int    `json:"seasonNumber"`
+	Name         string `json:"name"`
+	Overview     string `json:"overview,omitempty"`
+	PosterURL    string `json:"posterUrl,omitempty"`
+	AirDate      string `json:"airDate,omitempty"`
+	EpisodeCount int    `json:"episodeCount"`
+	ExternalID   string `json:"externalId,omitempty"`
+}
+
+type Episode struct {
+	ID             string `json:"id"`
+	SeasonID       string `json:"seasonId"`
+	EpisodeNumber  int    `json:"episodeNumber"`
+	Name           string `json:"name"`
+	Overview       string `json:"overview,omitempty"`
+	AirDate        string `json:"airDate,omitempty"`
+	RuntimeMinutes int    `json:"runtimeMinutes,omitempty"`
+	StillURL       string `json:"stillUrl,omitempty"`
+	ExternalID     string `json:"externalId,omitempty"`
 }
 type Source struct {
 	ID          string `json:"id"`
