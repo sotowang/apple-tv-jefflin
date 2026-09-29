@@ -17,6 +17,18 @@ import (
 
 type fakeProvider struct{}
 
+func TestDebugRouteAbsentInProduction(t *testing.T) {
+	const key = "test-api-key"
+	router := New(config.Config{AppEnv: "production", APIKey: key}, nil).Router()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/debug/media/archive:test", nil)
+	req.Header.Set("X-API-Key", key)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("production debug route status = %d, want 404", w.Code)
+	}
+}
+
 func (fakeProvider) Name() string { return "archive" }
 func (fakeProvider) Search(ctx context.Context, q media.SearchQuery) ([]media.Media, error) {
 	return []media.Media{{ID: "archive:test-api-film", Type: "movie", Title: "Test Film", Provider: "archive", ExternalID: "test-api-film"}}, nil
@@ -76,7 +88,7 @@ func TestAPIIntegration(t *testing.T) {
 	if w := call("GET", "/api/v1/media/archive:test-api-film", key); w.Code != 200 || !strings.Contains(w.Body.String(), `"rightsStatus":"verified"`) {
 		t.Fatalf("detail: %d %s", w.Code, w.Body.String())
 	}
-	if w := call("GET", "/api/v1/debug/media/archive:test-api-film", key); w.Code != 200 || !strings.Contains(w.Body.String(), `"resolvedUrlHost":"archive.org"`) {
+	if w := call("GET", "/api/v1/debug/media/archive:test-api-film", key); w.Code != 200 || !strings.Contains(w.Body.String(), `"host":"archive.org"`) || strings.Contains(w.Body.String(), "https://archive.org/download/") {
 		t.Fatalf("debug: %d %s", w.Code, w.Body.String())
 	}
 	prod := New(config.Config{AppEnv: "production", APIKey: key}, repository.New(pool), fakeProvider{}).Router()

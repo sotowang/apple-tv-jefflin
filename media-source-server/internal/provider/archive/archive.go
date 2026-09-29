@@ -20,6 +20,11 @@ import (
 
 var ErrNotFound = errors.New("archive item not found")
 var ErrNoPlayable = errors.New("no playable source")
+
+type UpstreamStatusError struct{ StatusCode int }
+
+func (e UpstreamStatusError) Error() string { return fmt.Sprintf("archive status %d", e.StatusCode) }
+
 var htmlTagRE = regexp.MustCompile(`<[^>]*>`)
 var identifierRE = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 
@@ -46,11 +51,12 @@ func (p *Provider) request(ctx context.Context, endpoint string, params map[stri
 	if err != nil {
 		return nil, err
 	}
+	media.SetUpstreamStatus(ctx, r.StatusCode())
 	if r.StatusCode() == 404 {
 		return nil, ErrNotFound
 	}
 	if r.StatusCode() != 200 {
-		return nil, fmt.Errorf("archive status %d", r.StatusCode())
+		return nil, UpstreamStatusError{StatusCode: r.StatusCode()}
 	}
 	return r.Body(), nil
 }

@@ -26,8 +26,8 @@ openssl rand -hex 32   # PLAY_URL_SIGNING_SECRET
 Edit `deploy/.env`: set both hostnames, `PUBLIC_MEDIA_BASE_URL=https://<media host>`, and the three distinct generated secrets. Keep the file private. The values must be set before Compose will start. The media API also requires HTTPS for its public URL. For a normal deployment:
 
 ```sh
+./jellyfin-online-media-plugin/build.sh
 cd deploy
-docker compose up -d --build
 ./deploy.sh
 ```
 
@@ -39,7 +39,7 @@ curl https://media.example.com/health
 docker compose ps
 ```
 
-The API runs `001_initial.sql` at startup before serving requests. This idempotent SQL creates all V1 tables and the Archive provider. For an explicit migration run, use `docker compose run --rm media-api /app/migrate`. Schema changes in later versions must use new numbered migrations; do not edit a migration already applied to production.
+The API applies pending numbered migrations at startup before serving requests. `001_initial.sql` creates the V1 tables and Archive provider. For an explicit migration run, use `docker compose run --rm media-api /app/migrate`. Schema changes in later versions must use new numbered migrations; do not edit a migration already applied to production.
 
 ## Jellyfin and Apple TV
 
@@ -50,7 +50,7 @@ The API runs `001_initial.sql` at startup before serving requests. This idempote
    ./jellyfin-online-media-plugin/build.sh
    ```
 
-   This runs `dotnet build -c Release` and copies `OnlineMedia.dll` into `deploy/plugins/OnlineMedia/`. If built locally, copy that DLL to the same path on the VPS. This path is mounted at `/config/plugins/OnlineMedia` in Jellyfin.
+   This publishes the plugin and copies its runtime files into `deploy/plugins/OnlineMedia/`. If built locally, copy the full plugin directory to the same path on the VPS. This path is mounted at `/config/plugins/OnlineMedia` in Jellyfin.
 3. Restart Jellyfin: `cd deploy && docker compose restart jellyfin`. In Dashboard → Plugins, confirm Online Media loaded. Open its configuration, enter `https://media.example.com`, the same `API_KEY` from `deploy/.env`, and a request timeout, then Save.
 4. Install Swiftfin on Apple TV, connect to `https://jellyfin.example.com`, and sign in. Open Channels → 在线影视 / Online Media → **Featured**, **Library**, or **Search Examples**. Featured browses Archive's open source movies collection. Library displays only items explicitly added through the Library API; it does not bulk import remote media into Jellyfin. Search Examples are labeled preset queries, not a text search box. Select a movie to load a direct-play candidate and play.
 
@@ -77,7 +77,7 @@ All `/api/v1` calls require `X-API-Key`; `/health` and signed `/play` do not. Er
 
 Search IDs use `archive:<identifier>` as external API references; PostgreSQL media and source primary keys are UUIDs. Search and Featured do not fill PostgreSQL. Detail requests save media; source requests save stable file references. Transient CDN URLs and video bytes are never stored. Detail returns `rightsStatus`: `verified` for recognizable public domain/Creative Commons metadata, `restricted` for explicit restriction, or `unknown`. This is a metadata hint, not a legal determination. Public Archive access and collection membership alone do not establish reuse rights.
 
-In non-production environments (`APP_ENV != production`), authenticated `GET /api/v1/debug/media/:id` returns media, sources, selected candidate, and resolved URL **host only**. The route is absent in production. The Go API does not serve video Range data: after the signed `/play` redirect, the client communicates directly with Archive/CDN, which handles Range requests. No video bytes pass through this VPS.
+In non-production environments (`APP_ENV != production`), authenticated `GET /api/v1/debug/media/:id` returns media, sources, selected candidate, and a `resolved` object containing host, container, directPlay, and proxyRequired, without the full URL. The route is absent in production. The Go API does not serve video Range data: after the signed `/play` redirect, the client communicates directly with Archive/CDN, which handles Range requests. No video bytes pass through this VPS.
 
 Example:
 
@@ -119,4 +119,46 @@ Provider tests use `httptest.Server` and require no internet. Repository and end
 
 V1 supports Internet Archive, a Jellyfin Channel, Swiftfin browsing, PostgreSQL metadata, and 302 direct redirects. Jellyfin's global text search does **not** search Archive. The Channel has Featured, Library, and clearly labeled Search Examples; arbitrary text search exists only at the Go `/api/v1/search` endpoint. An MP4 extension does not guarantee direct play. There is no automatic transcoding, source fallback, IPTV, health worker, subtitles, video proxy, or high availability. Actual Apple TV playback must be verified on your device and network after deployment.
 
-Provider logic lives behind the Go `Provider` interface. V2 can add legal IPTV/VOD providers, live TV and EPG, health checks, ranking, favorites, and episode mapping. PostgreSQL remains the system of record; add Redis only if multiple API instances or shared short lived state require it.
+This V1 release stops at deployment and real-device verification. Future work should be chosen after Apple TV playback is confirmed.
+
+## Release and plugin compatibility
+
+- Tested Jellyfin version: `Jellyfin.Server 12.1.0.0` from the official 12.1 image; deployment pins `jellyfin/jellyfin:12.1.20260915-010956` to keep the server version stable.
+- Plugin target: `Jellyfin.Controller` 12.1.0 and `Jellyfin.Model` 12.1.0.
+- .NET: `net10.0`; build with .NET SDK 10. The official 12.1 image contains `curl` for its `/health` check.
+- `IPluginServiceRegistrator` registers one reusable `MediaApiClient` and `IChannel → OnlineChannel`; Jellyfin constructs the Channel with DI. The plugin folder is `deploy/plugins/OnlineMedia/`, mounted at `/config/plugins/OnlineMedia/`. `build.sh` publishes and copies plugin runtime files there. Restart Jellyfin after replacing the DLL.
+
+## Smoke test
+
+Install `jq` and `curl`, then run after the API is reachable and Featured contains at least one playable item:
+
+```sh
+MEDIA_API_URL=https://media.example.com API_KEY='<same key as deploy/.env>' ./deploy/smoke-test.sh
+```
+
+The script checks `/health`, Featured, media detail, sources, signed `/play`, and the 302 Location host. It uses HEAD for `/play`, does not follow the redirect, and never downloads video. To include it in deployment checks, set `RUN_SMOKE_TEST=true` before `./deploy/deploy.sh`; the default is off. The deployment script also checks PostgreSQL, Media API, Jellyfin, Caddy, and the public HTTPS health endpoint. Do not run the deployment script over a live production stack unless you intend to update it.
+
+The migration runner records filenames in `schema_migrations` and applies pending numbered SQL files in order under a PostgreSQL advisory lock. Repeated startup skips migrations already recorded. Add `002_xxx.sql`, `003_xxx.sql`, and so on for future schema changes. Never edit `001_initial.sql` after it has reached production.
+
+## Apple TV Test Checklist
+
+1. Open Swiftfin on Apple TV and log in to Jellyfin.
+2. Open Channels → Online Media → Featured.
+3. Select a film and press Play.
+4. On the server, run `cd deploy && docker compose logs -f jellyfin media-api`.
+5. Confirm `Online Media item`, `Online Media selected source`, `Online Media play URL created`, and `play redirect` with `sourceId` and `targetHost=archive.org`.
+6. Confirm the film starts and the Apple TV player reports direct play where available.
+
+Run `docker stats` during playback and watch the `media-api` NET I/O counters and overall VPS outbound traffic. The API should show only small control requests. Sustained MB/s growth means investigate whether Jellyfin is transcoding or proxying instead of Swiftfin fetching the Archive file directly.
+
+## Troubleshooting order
+
+| Symptom | Check |
+|---|---|
+| Plugin absent | Jellyfin logs, `/config/plugins/OnlineMedia`, `OnlineMedia.dll`, `net10.0` build, Jellyfin 12.1 SDK match |
+| Channel opens but is empty | Media API URL and key in plugin settings, `/api/v1/featured`, container DNS and `/health` |
+| Selecting a film fails | `/api/v1/media/:id`, `/sources`, candidate count, `directPlay` and `requiresProxy` |
+| Play fails | `/play-url`, signed `/play` 302 with `curl -I`, Archive source availability, Swiftfin codec support |
+| VPS traffic is high | Jellyfin playback status for transcoding/proxying and whether Swiftfin is using direct play |
+
+Go API supports arbitrary text search at `/api/v1/search`. Swiftfin/Jellyfin Channel V1 does not yet provide arbitrary text input; its UI is Featured, Library, and Search Examples.

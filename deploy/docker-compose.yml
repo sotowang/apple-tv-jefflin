@@ -39,7 +39,7 @@ services:
       timeout: 5s
       retries: 5
   jellyfin:
-    image: jellyfin/jellyfin:12.1
+    image: jellyfin/jellyfin:12.1.20260915-010956
     restart: unless-stopped
     volumes:
       - jellyfin-config:/config

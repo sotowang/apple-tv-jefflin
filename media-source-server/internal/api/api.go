@@ -52,8 +52,14 @@ func logMiddleware() gin.HandlerFunc {
 		_, _ = rand.Read(b)
 		id := hex.EncodeToString(b)
 		c.Header("X-Request-ID", id)
+		requestContext, upstreamCode := media.WithUpstreamStatus(c.Request.Context())
+		c.Request = c.Request.WithContext(requestContext)
 		c.Next()
-		slog.Info("request", "requestId", id, "method", c.Request.Method, "path", c.FullPath(), "status", c.Writer.Status(), "latency", time.Since(start).String())
+		provider, _ := c.Get("provider")
+		mediaID, _ := c.Get("mediaId")
+		sourceID, _ := c.Get("sourceId")
+		upstreamStatus := *upstreamCode
+		slog.Info("request", "requestId", id, "method", c.Request.Method, "endpoint", c.FullPath(), "provider", provider, "mediaId", mediaID, "sourceId", sourceID, "latencyMs", time.Since(start).Milliseconds(), "httpStatus", c.Writer.Status(), "upstreamStatus", upstreamStatus)
 	}
 }
 func (a *API) auth() gin.HandlerFunc {
@@ -110,6 +116,7 @@ func (a *API) providers(c *gin.Context) {
 	c.JSON(200, gin.H{"providers": out})
 }
 func (a *API) search(c *gin.Context) {
+	c.Set("provider", "archive")
 	q := strings.TrimSpace(c.Query("q"))
 	if len(q) < 2 || len(q) > 120 {
 		failure(c, 400, "INVALID_QUERY", "query must be 2-120 bytes")
@@ -144,6 +151,7 @@ func (a *API) search(c *gin.Context) {
 	c.JSON(200, gin.H{"items": items})
 }
 func (a *API) featured(c *gin.Context) {
+	c.Set("provider", "archive")
 	page, limit, ok := parsePage(c)
 	if !ok {
 		return
@@ -238,6 +246,10 @@ func (a *API) providerFailure(c *gin.Context, e error) {
 	}
 }
 func (a *API) detail(c *gin.Context) {
+	c.Set("mediaId", c.Param("id"))
+	if provider, _, ok := splitID(c.Param("id")); ok {
+		c.Set("provider", provider)
+	}
 	m, e := a.getMedia(c.Request.Context(), c.Param("id"))
 	if e != nil {
 		a.providerFailure(c, e)
@@ -246,6 +258,10 @@ func (a *API) detail(c *gin.Context) {
 	c.JSON(200, m)
 }
 func (a *API) sources(c *gin.Context) {
+	c.Set("mediaId", c.Param("id"))
+	if provider, _, ok := splitID(c.Param("id")); ok {
+		c.Set("provider", provider)
+	}
 	m, e := a.getMedia(c.Request.Context(), c.Param("id"))
 	if e != nil {
 		a.providerFailure(c, e)
@@ -280,6 +296,10 @@ func (a *API) getSources(ctx context.Context, m media.Media) ([]media.Source, er
 	return list, nil
 }
 func (a *API) debugMedia(c *gin.Context) {
+	c.Set("mediaId", c.Param("id"))
+	if provider, _, ok := splitID(c.Param("id")); ok {
+		c.Set("provider", provider)
+	}
 	m, err := a.getMedia(c.Request.Context(), c.Param("id"))
 	if err != nil {
 		a.providerFailure(c, err)
@@ -292,6 +312,7 @@ func (a *API) debugMedia(c *gin.Context) {
 	}
 	var selected *media.Source
 	host := ""
+	proxyRequired := false
 	for i := range sources {
 		if sources[i].DirectPlay && !sources[i].RequiresProxy {
 			selected = &sources[i]
@@ -308,8 +329,16 @@ func (a *API) debugMedia(c *gin.Context) {
 		if parseErr == nil {
 			host = parsed.Hostname()
 		}
+		proxyRequired = resolved.ProxyRequired
 	}
-	c.JSON(200, gin.H{"media": m, "sources": sources, "selectedSource": selected, "resolvedUrlHost": host})
+	resolvedInfo := gin.H{"host": host, "container": "", "directPlay": false, "proxyRequired": false}
+	if selected != nil {
+		resolvedInfo["container"] = selected.Container
+		resolvedInfo["directPlay"] = selected.DirectPlay
+		resolvedInfo["proxyRequired"] = proxyRequired
+		c.Set("sourceId", selected.ID)
+	}
+	c.JSON(200, gin.H{"media": m, "sources": sources, "selectedSource": selected, "resolved": resolvedInfo})
 }
 func (a *API) library(c *gin.Context) {
 	page, limit, ok := parsePage(c)
@@ -349,7 +378,9 @@ func (a *API) removeLibrary(c *gin.Context) {
 }
 func (a *API) playURL(c *gin.Context) {
 	id := c.Param("id")
-	if _, e := a.Repo.Source(c.Request.Context(), id); e != nil {
+	c.Set("sourceId", id)
+	source, e := a.Repo.Source(c.Request.Context(), id)
+	if e != nil {
 		if errors.Is(e, pgx.ErrNoRows) {
 			failure(c, 404, "SOURCE_NOT_FOUND", "source not found")
 		} else {
@@ -357,6 +388,8 @@ func (a *API) playURL(c *gin.Context) {
 		}
 		return
 	}
+	c.Set("provider", source.Provider)
+	c.Set("mediaId", source.MediaID)
 	expires := time.Now().Add(10 * time.Minute)
 	v := url.Values{}
 	v.Set("expires", strconv.FormatInt(expires.Unix(), 10))
@@ -366,6 +399,7 @@ func (a *API) playURL(c *gin.Context) {
 }
 func (a *API) play(c *gin.Context) {
 	id := c.Param("sourceId")
+	c.Set("sourceId", id)
 	e := security.Verify(a.Config.SigningSecret, id, c.Query("expires"), c.Query("token"), time.Now())
 	if e != nil {
 		if errors.Is(e, security.ErrExpired) {
@@ -384,6 +418,8 @@ func (a *API) play(c *gin.Context) {
 		}
 		return
 	}
+	c.Set("provider", s.Provider)
+	c.Set("mediaId", s.MediaID)
 	var resolved media.ResolvedStream
 	if v, ok := a.ResolveCache.Get(id); ok {
 		resolved = v

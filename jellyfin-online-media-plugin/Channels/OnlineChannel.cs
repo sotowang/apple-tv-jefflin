@@ -16,10 +16,11 @@ public sealed class OnlineChannel : IChannel, IRequiresMediaInfoCallback
     private readonly ILogger<OnlineChannel> _logger;
     private readonly MediaApiClient _api;
 
-    public OnlineChannel(ILogger<OnlineChannel> logger, ILogger<MediaApiClient> apiLogger)
+    public OnlineChannel(ILogger<OnlineChannel> logger, MediaApiClient api)
     {
         _logger = logger;
-        _api = new MediaApiClient(apiLogger);
+        _api = api;
+        _logger.LogInformation("Online Media channel initialized");
     }
 
     public string Name => "在线影视 / Online Media";
@@ -36,6 +37,7 @@ public sealed class OnlineChannel : IChannel, IRequiresMediaInfoCallback
     {
         var folder = query.FolderId ?? "";
         _logger.LogInformation("Online Media channel request folder={FolderId} startIndex={StartIndex}", folder, query.StartIndex);
+        await _api.CheckHealthOnceAsync(cancellationToken).ConfigureAwait(false);
         if (folder.Length == 0) return new ChannelItemResult { Items = [Folder("library", "Library"), Folder("featured", "Featured"), Folder("examples", "Search Examples")] };
         if (folder == "examples") return new ChannelItemResult { Items = Examples.Select(q => Folder("example:" + q, "Example: " + q)).ToArray() };
         var page = Math.Clamp(query.StartIndex.GetValueOrDefault() / 20 + 1, 1, 100);
@@ -71,7 +73,7 @@ public sealed class OnlineChannel : IChannel, IRequiresMediaInfoCallback
             // The Go API orders source candidates. V1 deliberately exposes one candidate and has no automatic fallback.
             var selected = sources.FirstOrDefault(s => s.DirectPlay && !s.RequiresProxy);
             if (selected is null) { _logger.LogWarning("Online Media has no direct-play candidate mediaId={MediaId}", id); return []; }
-            _logger.LogInformation("Online Media selected source mediaId={MediaId} sourceId={SourceId} container={Container}", id, selected.Id, selected.Container);
+            _logger.LogInformation("Online Media selected source mediaId={MediaId} candidateCount={CandidateCount} sourceId={SourceId} container={Container} quality={Quality} videoCodec={VideoCodec} audioCodec={AudioCodec}", id, sources.Length, selected.Id, selected.Container, selected.Quality, selected.VideoCodec, selected.AudioCodec);
             var signed = await _api.CreatePlayUrlAsync(selected.Id, cancellationToken).ConfigureAwait(false);
             if (!Uri.TryCreate(signed.Url, UriKind.Absolute, out var playUri) || playUri.Scheme != Uri.UriSchemeHttps)
                 throw new MediaApiException("api/v1/sources/:id/play-url", null, "", null, "Media API returned a non-HTTPS play URL");
