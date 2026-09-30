@@ -49,6 +49,8 @@ cd deploy
 
 `deploy.sh` builds, starts, shows container status, waits for PostgreSQL, API, and Jellyfin health, checks `https://<media host>/health`, then syncs the movie catalog. It needs working DNS and ports 80/443 for Caddy certificate issuance. Verify manually:
 
+On a host where an existing Nginx already owns ports 80/443 and proxies Jellyfin to `127.0.0.1:18086` and Media API to `127.0.0.1:18087`, set `REVERSE_PROXY_MODE=external-nginx` in the private `deploy/.env`. The deployment script then loads `docker-compose.external-nginx.yml`, publishes only those loopback ports, skips Caddy, and still verifies the public HTTPS health endpoint. Keep the default `REVERSE_PROXY_MODE=caddy` for a host using this project's Caddy service.
+
 ```sh
 curl https://media.example.com/health
 # {"status":"ok"}

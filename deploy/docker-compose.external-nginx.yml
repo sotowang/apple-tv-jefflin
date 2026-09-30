@@ -1,0 +1,11 @@
+# Use with COMPOSE_FILE=docker-compose.yml:docker-compose.external-nginx.yml
+# on a host whose existing Nginx proxies to loopback ports 18086 and 18087.
+services:
+  caddy:
+    profiles: [caddy]
+  media-api:
+    ports:
+      - "127.0.0.1:18087:8080"
+  jellyfin:
+    ports:
+      - "127.0.0.1:18086:8096"
