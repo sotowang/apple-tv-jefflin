@@ -137,11 +137,19 @@ func (a *API) episodeSources(c *gin.Context) {
 	}
 	for _, e := range episodes {
 		if e.EpisodeNumber == episodeNumber {
-			items, err := a.Registry.ResolveEpisode(c.Request.Context(), m, e)
+			e.SeasonNumber = n
+			key := fmt.Sprintf("%s:season:%d:episode:%d", m.ID, n, episodeNumber)
+			if cached, ok := a.SourcesCache.Get(key); ok {
+				c.JSON(http.StatusOK, gin.H{"items": cached, "sources": cached})
+				return
+			}
+			items, err := a.SourceResolver.ResolveEpisode(c.Request.Context(), m, e)
 			if err != nil {
 				a.providerFailure(c, err)
 				return
 			}
+			items, ttl := a.prepareSources(items)
+			a.SourcesCache.Set(key, items, ttl)
 			c.JSON(http.StatusOK, gin.H{"items": items, "sources": items})
 			return
 		}

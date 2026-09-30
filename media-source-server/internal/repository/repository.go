@@ -9,6 +9,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"online-media/media-source-server/internal/database/dbgen"
 	"online-media/media-source-server/internal/media"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -134,7 +136,12 @@ func convertSeason(s dbgen.Season, mediaID string) media.Season {
 	return media.Season{ID: mediaID + ":season:" + fmt.Sprint(s.SeasonNumber), MediaID: mediaID, SeasonNumber: int(s.SeasonNumber), Name: s.Name, Overview: s.Overview, PosterURL: s.PosterUrl, AirDate: dateString(s.AirDate), EpisodeCount: int(s.EpisodeCount), ExternalID: s.ExternalID}
 }
 func convertEpisode(e dbgen.Episode, seasonID string) media.Episode {
-	return media.Episode{ID: seasonID + ":episode:" + fmt.Sprint(e.EpisodeNumber), SeasonID: seasonID, EpisodeNumber: int(e.EpisodeNumber), Name: e.Name, Overview: e.Overview, AirDate: dateString(e.AirDate), RuntimeMinutes: int(e.RuntimeMinutes), StillURL: e.StillUrl, ExternalID: e.ExternalID}
+	parts := strings.Split(seasonID, ":season:")
+	season := 0
+	if len(parts) == 2 {
+		season, _ = strconv.Atoi(parts[1])
+	}
+	return media.Episode{ID: seasonID + ":episode:" + fmt.Sprint(e.EpisodeNumber), SeasonID: seasonID, SeasonNumber: season, EpisodeNumber: int(e.EpisodeNumber), Name: e.Name, Overview: e.Overview, AirDate: dateString(e.AirDate), RuntimeMinutes: int(e.RuntimeMinutes), StillURL: e.StillUrl, ExternalID: e.ExternalID}
 }
 func (r *Repository) UpsertSeasons(ctx context.Context, m media.Media, seasons []media.Season) ([]media.Season, error) {
 	mid, err := r.MediaUUID(ctx, m.Provider, m.ExternalID)

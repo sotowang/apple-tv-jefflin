@@ -16,6 +16,7 @@ import (
 	"github.com/go-resty/resty/v2"
 	"online-media/media-source-server/internal/cache"
 	"online-media/media-source-server/internal/media"
+	"online-media/media-source-server/internal/provider"
 )
 
 var ErrNotFound = errors.New("archive item not found")
@@ -334,12 +335,12 @@ func (p *Provider) GetEpisodes(context.Context, string, int) ([]media.Episode, e
 }
 func (p *Provider) ResolveMedia(ctx context.Context, m media.Media) ([]media.Source, error) {
 	if m.Provider != p.Name() {
-		return []media.Source{}, nil
+		return nil, provider.ErrUnsupported
 	}
 	return p.GetSources(ctx, m)
 }
 func (p *Provider) ResolveEpisode(context.Context, media.Media, media.Episode) ([]media.Source, error) {
-	return []media.Source{}, nil
+	return nil, provider.ErrUnsupported
 }
 func (p *Provider) ResolveStream(ctx context.Context, s media.Source) (*media.ResolvedStream, error) {
 	return p.Resolve(ctx, s)

@@ -10,6 +10,7 @@ import (
 	"online-media/media-source-server/internal/database"
 	"online-media/media-source-server/internal/provider"
 	"online-media/media-source-server/internal/provider/archive"
+	"online-media/media-source-server/internal/provider/custom"
 	"online-media/media-source-server/internal/provider/tmdb"
 	"online-media/media-source-server/internal/repository"
 	"os"
@@ -49,6 +50,14 @@ func main() {
 		r.RegisterMetadata(tmdb.New(cfg.TMDBAPIToken, cfg.TMDBLanguage, cfg.TMDBRegion, cfg.RequestTimeout))
 	} else {
 		slog.Info("TMDB metadata provider disabled: TMDB_API_TOKEN is empty")
+	}
+	if cfg.CustomSourceEnabled && cfg.CustomSourceBaseURL != "" {
+		p, err := custom.New(cfg.CustomSourceBaseURL, cfg.CustomSourceAPIKey, cfg.CustomSourceTimeout, cfg.CustomSourceAllowPrivateNetwork)
+		if err != nil {
+			slog.Error("custom source configuration", "error", err)
+			os.Exit(1)
+		}
+		r.RegisterSource(p)
 	}
 	a := api.NewWithRegistry(cfg, repository.New(pool), r)
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: a.Router(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}

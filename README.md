@@ -1,10 +1,10 @@
-# Online Media V2 Phase 1
+# Online Media V2 Phase 2
 
 A personal, zero video storage media catalog for Jellyfin and Swiftfin. TMDB supplies movie and TV metadata; Internet Archive continues to supply its existing movie metadata, playable sources, Featured browse, and the Swiftfin Movies catalog. PostgreSQL stores selected metadata, source references, and library choices. The Go service issues ten minute signed play links for the Jellyfin Channel. A catalog sync writes `.strm` links and `.nfo` metadata to a standard Jellyfin Movies library for Swiftfin. The catalog sync does not download video; Jellyfin may fetch video when probing or transcoding.
 
 ## V2 Architecture
 
-The Go API uses a provider registry with separate `MetadataProvider` and `SourceProvider` interfaces. TMDB supplies Chinese localized Movie and TV metadata, including seasons and episodes. **TMDB provides metadata only. TMDB does not provide video streams.** The existing Internet Archive provider remains both a metadata provider and a movie source provider. A TMDB item with no matching source provider returns an empty `items` array from its sources endpoint. Episode sources are reserved for a later phase.
+The Go API uses separate metadata and source providers. TMDB supplies localized Movie and TV metadata, including seasons and episodes. TMDB does not supply video streams. SourceResolver aggregates enabled source providers. Internet Archive remains a metadata and movie source provider; an optional CustomSourceProvider calls a user-controlled lookup API.
 
 Search is transient: results do not create database rows. Detail requests upsert metadata into PostgreSQL. The API uses its existing in-memory TTL cache for search, detail, seasons, episodes, and sources; no Redis service is needed. Search ranks exact localized titles before original-title matches, prefixes, and fuzzy matches. TMDB popularity only breaks ties within a rank. Stable external IDs use `tmdb:movie:<id>`, `tmdb:tv:<id>`, and `archive:<identifier>`; database UUIDs stay internal.
 
@@ -158,7 +158,36 @@ Provider tests use `httptest.Server` and require no internet. Repository and end
 
 V2 Phase 1 adds TMDB metadata and TV browsing to the Go API. Swiftfin does not display the Channel's films; use the Movies library. Jellyfin's global text search does **not** search remote metadata beyond films already synced into the Movies library. The Channel has Featured, Library, and clearly labeled Search Examples; arbitrary text search exists only at the Go `/api/v1/search` endpoint. An MP4 extension does not guarantee direct play. There is no application-level source fallback, IPTV, health worker, subtitles, video proxy, or high availability. Actual Apple TV playback must be verified on your device and network.
 
-V2 Phase 2 may add legitimate TV and episode source providers, source matching across metadata catalogs, playback integration for TV in Jellyfin/Swiftfin, and a text search UI. Phase 1 does not add video scraping, downloads, proxies, torrents, DRM bypass, Redis, or Elasticsearch.
+Phase 3 could add Jellyfin TV catalog integration, provider-specific health telemetry, and a text search UI. This phase does not add scraping, downloads, proxies, torrents, DRM bypass, Redis, or Elasticsearch.
+
+## V2 Phase 2 Source Resolution
+
+TMDB is the metadata layer. `SourceResolver` calls enabled source providers in `SOURCE_PROVIDER_ORDER`, validates title/year and episode numbers, isolates upstream failures, removes duplicate URLs, and ranks direct play, proxy needs, quality, language, then provider order. `CustomSourceProvider` performs lookup against a fixed user-controlled API. It never crawls websites. The `items` response and legacy `sources` response contain the same unified sources. `/api/v1/providers` reports metadata and source registrations without active health checks.
+
+Set `CUSTOM_SOURCE_ENABLED=true`, `CUSTOM_SOURCE_BASE_URL=https://your-source-api.example`, and optionally `CUSTOM_SOURCE_API_KEY`. Defaults: `CUSTOM_SOURCE_TIMEOUT=8s`, `CUSTOM_SOURCE_ALLOW_PRIVATE_NETWORK=false`, `SOURCE_PROVIDER_ORDER=custom,archive`, `SOURCE_CACHE_TTL=10m`. The private network flag is intended only for a trusted local test service. The fixed base URL must use HTTPS when the flag is false. Requests and redirects cannot switch to another host; DNS targets are checked before each connection.
+
+Custom API contract:
+
+```http
+GET /v1/search/movie?title=流浪地球&year=2019
+GET /v1/search/episode?title=凡人修仙传&season=1&episode=1
+Authorization: Bearer <CUSTOM_SOURCE_API_KEY>
+Accept: application/json
+```
+
+Return HTTP 200 with `{"items":[{"providerItemId":"ep-001","title":"凡人修仙传","season":1,"episode":1,"url":"https://example.com/episode1.m3u8","quality":"1080p","container":"hls","language":"zh-CN","directPlay":true}]}`. Movie items use `year` instead of `season` and `episode`. Optional fields: `externalId`, `originalTitle`, `requiresProxy`, `width`, `height`, `bitrate`, `expiresAt` (RFC3339), and `ephemeral`. HTTP 404 means no result. Only HTTPS playback URLs are accepted. Source URLs are held in memory under opaque signed IDs and are never persisted to PostgreSQL. Cache lifetime is at most 10 minutes and at most 30 seconds before `expiresAt`. Restarting the API invalidates these IDs.
+
+Test the flow after configuring TMDB and a custom lookup API:
+
+```sh
+curl -G -H "X-API-Key: $API_KEY" --data-urlencode 'q=凡人修仙传' 'http://localhost:8080/api/v1/search?provider=tmdb'
+curl -H "X-API-Key: $API_KEY" 'http://localhost:8080/api/v1/media/tmdb:tv:<id>/seasons/1/episodes'
+curl -H "X-API-Key: $API_KEY" 'http://localhost:8080/api/v1/media/tmdb:tv:<id>/seasons/1/episodes/1/sources'
+curl -X POST -H "X-API-Key: $API_KEY" 'http://localhost:8080/api/v1/sources/<source-id>/play-url'
+curl -I '<returned-play-url>'
+```
+
+The last request returns a 302 to a direct HTTPS stream; Go does not relay video bytes. For signed upstream URLs, clients should request a fresh source and play URL near playback time.
 
 ## Release and plugin compatibility
 

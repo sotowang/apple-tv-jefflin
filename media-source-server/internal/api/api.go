@@ -19,6 +19,7 @@ import (
 	"online-media/media-source-server/internal/provider/archive"
 	"online-media/media-source-server/internal/repository"
 	"online-media/media-source-server/internal/security"
+	"online-media/media-source-server/internal/source"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,15 +29,17 @@ import (
 var errDatabase = errors.New("database error")
 
 type API struct {
-	Config        config.Config
-	Repo          *repository.Repository
-	Registry      *provider.Registry
-	SearchCache   *cache.TTL[string, []media.Media]
-	MediaCache    *cache.TTL[string, media.Media]
-	SourcesCache  *cache.TTL[string, []media.Source]
-	ResolveCache  *cache.TTL[string, media.ResolvedStream]
-	SeasonsCache  *cache.TTL[string, []media.Season]
-	EpisodesCache *cache.TTL[string, []media.Episode]
+	Config           config.Config
+	Repo             *repository.Repository
+	Registry         *provider.Registry
+	SearchCache      *cache.TTL[string, []media.Media]
+	MediaCache       *cache.TTL[string, media.Media]
+	SourcesCache     *cache.TTL[string, []media.Source]
+	ResolveCache     *cache.TTL[string, media.ResolvedStream]
+	SeasonsCache     *cache.TTL[string, []media.Season]
+	EpisodesCache    *cache.TTL[string, []media.Episode]
+	EphemeralSources *cache.TTL[string, media.Source]
+	SourceResolver   *source.Resolver
 }
 
 func New(cfg config.Config, repo *repository.Repository, providers ...media.Provider) *API {
@@ -50,7 +53,7 @@ func NewWithRegistry(cfg config.Config, repo *repository.Repository, r *provider
 	if r == nil {
 		r = provider.NewRegistry()
 	}
-	return &API{Config: cfg, Repo: repo, Registry: r, SearchCache: cache.New[string, []media.Media](time.Minute), MediaCache: cache.New[string, media.Media](time.Minute), SourcesCache: cache.New[string, []media.Source](time.Minute), ResolveCache: cache.New[string, media.ResolvedStream](time.Minute), SeasonsCache: cache.New[string, []media.Season](time.Minute), EpisodesCache: cache.New[string, []media.Episode](time.Minute)}
+	return &API{Config: cfg, Repo: repo, Registry: r, SourceResolver: source.New(r, cfg.SourceProviderOrder), EphemeralSources: cache.New[string, media.Source](time.Minute), SearchCache: cache.New[string, []media.Media](time.Minute), MediaCache: cache.New[string, media.Media](time.Minute), SourcesCache: cache.New[string, []media.Source](time.Minute), ResolveCache: cache.New[string, media.ResolvedStream](time.Minute), SeasonsCache: cache.New[string, []media.Season](time.Minute), EpisodesCache: cache.New[string, []media.Episode](time.Minute)}
 }
 func failure(c *gin.Context, status int, code, msg string) {
 	c.JSON(status, gin.H{"error": gin.H{"code": code, "message": msg}})
@@ -117,21 +120,27 @@ func parsePage(c *gin.Context) (int, int, bool) {
 	return page, limit, true
 }
 func (a *API) providers(c *gin.Context) {
-	rows, e := a.Repo.Providers(c.Request.Context())
-	if e != nil {
-		failure(c, 500, "DATABASE_ERROR", "database error")
-		return
-	}
 	out := []gin.H{}
-	for _, p := range rows {
-		if _, ok := a.Registry.MetadataProviders[p.Name]; !ok {
-			if _, ok = a.Registry.SourceProviders[p.Name]; !ok {
-				continue
-			}
-		}
-		out = append(out, gin.H{"name": p.Name, "type": p.Type, "priority": p.Priority})
+	for name := range a.Registry.MetadataProviders {
+		out = append(out, gin.H{"name": name, "type": "metadata", "enabled": true})
 	}
-	c.JSON(200, gin.H{"providers": out})
+	for name, p := range a.Registry.SourceProviders {
+		enabled := true
+		if ep, ok := p.(interface{ Enabled() bool }); ok {
+			enabled = ep.Enabled()
+		}
+		out = append(out, gin.H{"name": name, "type": "source", "enabled": enabled})
+	}
+	if _, ok := a.Registry.SourceProviders["custom"]; !ok {
+		out = append(out, gin.H{"name": "custom", "type": "source", "enabled": false})
+	}
+	if _, ok := a.Registry.MetadataProviders["tmdb"]; !ok {
+		out = append(out, gin.H{"name": "tmdb", "type": "metadata", "enabled": false})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return fmt.Sprint(out[i]["name"], out[i]["type"]) < fmt.Sprint(out[j]["name"], out[j]["type"])
+	})
+	c.JSON(200, gin.H{"providers": out, "items": out})
 }
 func (a *API) search(c *gin.Context) {
 	c.Set("provider", "metadata")
@@ -341,19 +350,33 @@ func (a *API) getSources(ctx context.Context, m media.Media) ([]media.Source, er
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", errDatabase, err)
 	}
-	if len(list) == 0 {
-		list, err = a.Registry.ResolveMedia(ctx, m)
-		if err != nil {
-			return nil, err
+	{
+		found, resolveErr := a.SourceResolver.ResolveMedia(ctx, m)
+		if resolveErr != nil && len(list) == 0 {
+			return nil, resolveErr
 		}
-		if len(list) > 0 {
-			list, err = a.Repo.UpsertSources(ctx, m, list)
+		// Archive's existing durable source rows remain the only persisted source data.
+		persist := []media.Source{}
+		if resolveErr == nil {
+			for _, s := range found {
+				if m.Provider == "archive" && s.Provider == "archive" && !s.Ephemeral && s.ID == "" && len(list) == 0 {
+					persist = append(persist, s)
+				} else if s.Provider != "archive" || m.Provider != "archive" {
+					list = append(list, s)
+				}
+			}
+		}
+		if len(persist) > 0 {
+			persist, err = a.Repo.UpsertSources(ctx, m, persist)
 			if err != nil {
 				return nil, fmt.Errorf("%w: %v", errDatabase, err)
 			}
+			list = append(list, persist...)
 		}
 	}
-	a.SourcesCache.Set(m.ID, list, a.Config.SourceTTL)
+	list = a.SourceResolver.Organize(list)
+	list, ttl := a.prepareSources(list)
+	a.SourcesCache.Set(m.ID, list, ttl)
 	return list, nil
 }
 func (a *API) debugMedia(c *gin.Context) {
@@ -440,7 +463,18 @@ func (a *API) removeLibrary(c *gin.Context) {
 func (a *API) playURL(c *gin.Context) {
 	id := c.Param("id")
 	c.Set("sourceId", id)
-	source, e := a.Repo.Source(c.Request.Context(), id)
+	var source media.Source
+	var e error
+	if strings.HasPrefix(id, "ephemeral:") {
+		var ok bool
+		source, ok = a.ephemeralSource(id)
+		if !ok {
+			failure(c, 404, "SOURCE_NOT_FOUND", "source not found")
+			return
+		}
+	} else {
+		source, e = a.Repo.Source(c.Request.Context(), id)
+	}
 	if e != nil {
 		if errors.Is(e, pgx.ErrNoRows) {
 			failure(c, 404, "SOURCE_NOT_FOUND", "source not found")
@@ -452,6 +486,12 @@ func (a *API) playURL(c *gin.Context) {
 	c.Set("provider", source.Provider)
 	c.Set("mediaId", source.MediaID)
 	expires := time.Now().Add(10 * time.Minute)
+	if source.Ephemeral {
+		candidate := time.Now().Add(a.sourceTTL(source))
+		if candidate.Before(expires) {
+			expires = candidate
+		}
+	}
 	v := url.Values{}
 	v.Set("expires", strconv.FormatInt(expires.Unix(), 10))
 	v.Set("token", security.Sign(a.Config.SigningSecret, id, expires.Unix()))
@@ -470,7 +510,17 @@ func (a *API) play(c *gin.Context) {
 		}
 		return
 	}
-	s, e := a.Repo.Source(c.Request.Context(), id)
+	var s media.Source
+	if strings.HasPrefix(id, "ephemeral:") {
+		var ok bool
+		s, ok = a.ephemeralSource(id)
+		if !ok {
+			failure(c, 404, "SOURCE_NOT_FOUND", "source not found")
+			return
+		}
+	} else {
+		s, e = a.Repo.Source(c.Request.Context(), id)
+	}
 	if e != nil {
 		if errors.Is(e, pgx.ErrNoRows) {
 			failure(c, 404, "SOURCE_NOT_FOUND", "source not found")
@@ -482,7 +532,9 @@ func (a *API) play(c *gin.Context) {
 	c.Set("provider", s.Provider)
 	c.Set("mediaId", s.MediaID)
 	var resolved media.ResolvedStream
-	if v, ok := a.ResolveCache.Get(id); ok {
+	if s.Ephemeral {
+		resolved = media.ResolvedStream{URL: s.URL, ProxyRequired: s.RequiresProxy}
+	} else if v, ok := a.ResolveCache.Get(id); ok {
 		resolved = v
 	} else {
 		p, ok := a.Registry.SourceProviders[s.Provider]

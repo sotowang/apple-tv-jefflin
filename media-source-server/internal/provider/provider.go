@@ -9,6 +9,11 @@ import (
 )
 
 var ErrNotFound = errors.New("media not found")
+var ErrUnsupported = errors.New("operation unsupported")
+var ErrUnauthorized = errors.New("provider unauthorized")
+var ErrRateLimited = errors.New("provider rate limited")
+var ErrUpstreamUnavailable = errors.New("provider upstream unavailable")
+var ErrDecode = errors.New("provider response decode error")
 
 type MetadataProvider interface {
 	Name() string

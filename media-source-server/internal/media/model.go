@@ -1,6 +1,9 @@
 package media
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type Media struct {
 	ID               string       `json:"id"`
@@ -46,6 +49,7 @@ type Episode struct {
 	ID             string `json:"id"`
 	SeasonID       string `json:"seasonId"`
 	EpisodeNumber  int    `json:"episodeNumber"`
+	SeasonNumber   int    `json:"seasonNumber,omitempty"`
 	Name           string `json:"name"`
 	Overview       string `json:"overview,omitempty"`
 	AirDate        string `json:"airDate,omitempty"`
@@ -54,17 +58,29 @@ type Episode struct {
 	ExternalID     string `json:"externalId,omitempty"`
 }
 type Source struct {
-	ID          string `json:"id"`
-	MediaID     string `json:"mediaId"`
-	Provider    string `json:"provider"`
-	ExternalID  string `json:"externalId,omitempty"`
-	FileName    string `json:"fileName"`
-	OriginalURL string `json:"-"`
-	Quality     string `json:"quality,omitempty"`
-	Container   string `json:"container,omitempty"`
-	VideoCodec  string `json:"videoCodec,omitempty"`
-	AudioCodec  string `json:"audioCodec,omitempty"`
-	Bitrate     int64  `json:"bitrate,omitempty"`
+	ID             string     `json:"id"`
+	MediaID        string     `json:"mediaId"`
+	Provider       string     `json:"provider"`
+	ExternalID     string     `json:"externalId,omitempty"`
+	ProviderItemID string     `json:"providerItemId,omitempty"`
+	URL            string     `json:"url,omitempty"`
+	Title          string     `json:"title,omitempty"`
+	OriginalTitle  string     `json:"originalTitle,omitempty"`
+	Year           int        `json:"year,omitempty"`
+	Language       string     `json:"language,omitempty"`
+	Width          int        `json:"width,omitempty"`
+	Height         int        `json:"height,omitempty"`
+	ExpiresAt      *time.Time `json:"expiresAt,omitempty"`
+	Ephemeral      bool       `json:"ephemeral,omitempty"`
+	SeasonNumber   int        `json:"seasonNumber,omitempty"`
+	EpisodeNumber  int        `json:"episodeNumber,omitempty"`
+	FileName       string     `json:"fileName"`
+	OriginalURL    string     `json:"-"`
+	Quality        string     `json:"quality,omitempty"`
+	Container      string     `json:"container,omitempty"`
+	VideoCodec     string     `json:"videoCodec,omitempty"`
+	AudioCodec     string     `json:"audioCodec,omitempty"`
+	Bitrate        int64      `json:"bitrate,omitempty"`
 	// DirectPlay is a container-level direct-play candidate; codecs are not probed.
 	DirectPlay    bool `json:"directPlay"`
 	RequiresProxy bool `json:"requiresProxy"`
